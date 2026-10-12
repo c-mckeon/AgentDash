@@ -73,8 +73,21 @@ class LedgerTests(unittest.TestCase):
     def test_idle_is_the_gap_when_next_call_comes_within_the_window(self):
         self.assertEqual(core.idle_seconds(previous_end=100.0, started=125.0, window=60), 25.0)
 
-    def test_idle_is_capped_at_the_window_after_the_machine_shut_down(self):
+    def test_idle_is_window_plus_wake_overhead_after_the_machine_shut_down(self):
         self.assertEqual(core.idle_seconds(previous_end=100.0, started=5000.0, window=60), 60)
+        self.assertEqual(
+            core.idle_seconds(previous_end=100.0, started=5000.0, window=60, wake_overhead=30), 90
+        )
+
+    def test_wake_overhead_is_not_charged_while_the_machine_stayed_up(self):
+        self.assertEqual(
+            core.idle_seconds(previous_end=100.0, started=160.0, window=60, wake_overhead=30), 60.0
+        )
+
+    def test_hard_stop_uses_the_larger_of_ledger_and_vendor_meter(self):
+        self.assertEqual(core.effective_spend(0.01, 0.04), 0.04)
+        self.assertEqual(core.effective_spend(0.05, 0.04), 0.05)
+        self.assertEqual(core.effective_spend(0.05, None), 0.05)
 
     def test_no_idle_for_the_first_call_or_a_clock_that_went_backwards(self):
         self.assertEqual(core.idle_seconds(previous_end=None, started=125.0, window=60), 0.0)
@@ -122,6 +135,15 @@ class ValidationTests(unittest.TestCase):
     def test_max_tokens_is_capped(self):
         clean, _ = core.validate_chat_request(self.ok(max_tokens=999999))
         self.assertEqual(clean["max_tokens"], core.MAX_OUTPUT_TOKENS)
+
+    def test_response_format_accepts_json_or_a_schema(self):
+        for value in (None, "json", {"type": "object"}):
+            with self.subTest(value=value):
+                clean, problem = core.validate_chat_request(self.ok(response_format=value))
+                self.assertIsNone(problem)
+                self.assertEqual(clean["response_format"], value)
+        clean, problem = core.validate_chat_request(self.ok(response_format="yaml"))
+        self.assertIsNone(clean)
 
     def test_rejections(self):
         bad_bodies = [

@@ -69,6 +69,25 @@ def web():
     # Held from budget check to ledger write, so two calls cannot both pass the
     # check on the last cent. The model handles one request at a time anyway.
     lock = asyncio.Lock()
+    # Modal's own metered cost for the month: the truth the hard stop is checked
+    # against. It covers everything in the workspace, not just model calls.
+    vendor = {"usd": None, "at": 0.0, "error": None}
+
+    async def vendor_spend() -> float | None:
+        if time.time() - vendor["at"] < 60:
+            return vendor["usd"]
+        try:
+            summary = await asyncio.to_thread(
+                lambda: modal.Workspace.from_context().billing.summary(cycle="this month")
+            )
+            vendor["usd"] = max(
+                float(summary.metered_cost), float(sum(summary.metered_cost_breakdown.values()))
+            )
+            vendor["error"] = None
+        except Exception as error:  # keep the last known figure and fall back to the ledger
+            vendor["error"] = str(error)[:200]
+        vendor["at"] = time.time()
+        return vendor["usd"]
 
     def authorised(request: Request) -> bool:
         expected = os.environ["GATEWAY_KEY"]
@@ -96,7 +115,8 @@ def web():
         records = read_ledger(month)
         return {
             "month": month,
-            "budget": core.budget_status(core.total_spent(records)),
+            "budget": core.budget_view(core.total_spent(records), await vendor_spend()),
+            "vendor_meter_error": vendor["error"],
             "summary": core.summarise(records),
             "recent": records[-20:],
         }
@@ -118,12 +138,17 @@ def web():
             now = datetime.now(timezone.utc)
             month = core.month_key(now)
             records = read_ledger(month)
-            budget = core.budget_status(core.total_spent(records))
+            ledger_usd = core.total_spent(records)
+            vendor_usd = await vendor_spend()
+            budget = core.budget_view(ledger_usd, vendor_usd)
             if budget["exhausted"]:
                 return JSONResponse({"error": "budget_exhausted", "budget": budget}, status_code=402)
 
             idle = core.idle_seconds(
-                core.last_end(records, entry.tier), time.time(), entry.idle_window_seconds
+                core.last_end(records, entry.tier),
+                time.time(),
+                entry.idle_window_seconds,
+                entry.wake_overhead_seconds,
             )
             # Timed from here, so a cold start or a wait in the queue is billed too.
             started = time.monotonic()
@@ -132,7 +157,12 @@ def web():
                     entry.model,
                     clean["messages"],
                     clean["tools"],
-                    {"num_predict": clean["max_tokens"], "temperature": clean["temperature"]},
+                    {
+                        "num_predict": clean["max_tokens"],
+                        "temperature": clean["temperature"],
+                        "num_thread": entry.num_threads,
+                    },
+                    clean["response_format"],
                 )
             except Exception as error:  # the machine failed, timed out, or is not deployed
                 reply = {"error": f"model service failed: {error}"}
@@ -149,7 +179,7 @@ def web():
             )
             append_ledger(month, record)
             await ledger_volume.commit.aio()
-            budget = core.budget_status(budget["spent_usd"] + record["cost_usd"])
+            budget = core.budget_view(ledger_usd + record["cost_usd"], vendor_usd)
 
         usage_out = {
             key: record[key]

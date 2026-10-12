@@ -33,6 +33,14 @@ class ModelEntry:
     # How long the machine stays up, and billed, after its last call.
     # Must match SCALEDOWN_SECONDS in model-server/serve.py.
     idle_window_seconds: float
+    # Extra billed time per wake for starting and stopping the machine, beyond
+    # the idle window. Measured on 2026-10-12 from Modal's bill (two wakes: 16 s
+    # and 46 s), so treat it as a rough estimate.
+    wake_overhead_seconds: float
+    # Threads Ollama may use. Modal bills CPU actually used above the reserved
+    # cores, and Ollama otherwise uses every core it can see, so this is pinned
+    # to cpu_cores to keep the price per second equal to the reservation.
+    num_threads: int
 
     @property
     def usd_per_second(self) -> float:
@@ -54,6 +62,8 @@ REGISTRY = {
         memory_gib=4,
         context_tokens=4096,
         idle_window_seconds=60,
+        wake_overhead_seconds=30,
+        num_threads=4,
     ),
 }
 
@@ -66,15 +76,27 @@ def cost_usd(entry: ModelEntry, seconds: float) -> float:
     return max(seconds, 0.0) * entry.usd_per_second
 
 
-def idle_seconds(previous_end: float | None, started: float, window: float) -> float:
-    """Seconds the machine sat idle but still billed since the previous call ended.
+def idle_seconds(previous_end: float | None, started: float, window: float, wake_overhead: float = 0.0) -> float:
+    """Seconds the machine was billed but not working since the previous call ended.
 
     The machine stays up for `window` seconds after a call. If the next call
-    comes sooner, the whole gap was billed; if later, only the window was.
+    comes sooner, the whole gap was billed. If it comes later, the machine shut
+    down in between: the window was billed, plus the overhead of stopping and
+    starting again.
     """
     if previous_end is None:
         return 0.0
-    return min(max(started - previous_end, 0.0), window)
+    gap = max(started - previous_end, 0.0)
+    return gap if gap <= window else window + wake_overhead
+
+
+def effective_spend(ledger_usd: float, vendor_usd: float | None) -> float:
+    """The figure the hard stop uses: the larger of our ledger and the vendor's meter.
+
+    The vendor's meter is the truth but lags by a minute or two; the ledger is
+    immediate but an estimate. Taking the larger errs on the side of stopping.
+    """
+    return max(ledger_usd, vendor_usd or 0.0)
 
 
 def budget_status(spent_usd: float, limit_usd: float = MONTHLY_BUDGET_USD) -> dict:
@@ -84,6 +106,14 @@ def budget_status(spent_usd: float, limit_usd: float = MONTHLY_BUDGET_USD) -> di
         "remaining_usd": round(max(limit_usd - spent_usd, 0.0), 6),
         "exhausted": spent_usd >= limit_usd,
     }
+
+
+def budget_view(ledger_usd: float, vendor_usd: float | None, limit_usd: float = MONTHLY_BUDGET_USD) -> dict:
+    """Budget status based on effective spend, showing both figures behind it."""
+    status = budget_status(effective_spend(ledger_usd, vendor_usd), limit_usd)
+    status["ledger_usd"] = round(ledger_usd, 6)
+    status["vendor_metered_usd"] = None if vendor_usd is None else round(vendor_usd, 6)
+    return status
 
 
 def total_spent(records: list[dict]) -> float:
@@ -162,10 +192,16 @@ def validate_chat_request(body) -> tuple[dict | None, str | None]:
     if not isinstance(temperature, (int, float)) or isinstance(temperature, bool) or not 0 <= temperature <= 2:
         return None, "temperature must be a number between 0 and 2"
 
+    # "json" for any JSON object, or a JSON schema the reply must match.
+    response_format = body.get("response_format")
+    if response_format is not None and response_format != "json" and not isinstance(response_format, dict):
+        return None, 'response_format must be "json" or a JSON schema object'
+
     return {
         "tier": tier,
         "messages": messages,
         "tools": tools,
+        "response_format": response_format,
         "role": role,
         "run_id": run_id,
         "max_tokens": min(max_tokens, MAX_OUTPUT_TOKENS),

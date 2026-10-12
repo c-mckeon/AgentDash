@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentDash Research</title>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<main>
+  <nav class="tabs"><a href="architecture.html">Architecture</a><a href="research.html" aria-current="page">Research</a></nav>
+
+  <h1>Research notes</h1>
+  <p class="lede">Small experiments run against the system as it stood on each date, to learn what our choices are good at and where they limit us. One section per date, newest first.</p>
+
+  <details class="step" open>
+    <summary><span class="num">12 October 2026</span> First measurements: cost tracking, tool calls, context size <span class="chip done">5 findings</span></summary>
+    <div class="body">
+
+      <h2>In short</h2>
+      <ul>
+        <li><strong>Our cost ledger was recording about an eighth of the real bill.</strong> Two causes were found and fixed. After the fixes it matched Modal's bill for the model machine to within 2% on the next batch of calls.</li>
+        <li><strong>Limiting the model to 4 processor threads gave the same writing speed at about half the cost.</strong> Left alone, it was using about 19 processor cores, and Modal charges for that.</li>
+        <li><strong>Asking for JSON output fixes the model's tool-call formatting completely.</strong> What remains is judgement: it chose the wrong tool in 2 of 10 simple requests, however the question was asked.</li>
+        <li><strong>The model can only read about 4,000 tokens, and it fails silently beyond that.</strong> A longer prompt has its beginning cut off with no error, and the beginning is where the task and instructions sit.</li>
+        <li><strong>Waiting costs more than working.</strong> One short question costs about 0.7 cents, of which roughly 97% is the machine starting, idling and stopping.</li>
+      </ul>
+
+      <h2>How this was done</h2>
+      <p>Every model call went through the deployed gateway to <code>qwen2.5-coder:1.5b</code> on Modal, with the randomness setting at zero so results repeat. Costs were read from Modal's own billing report before and after each experiment. Sample sizes are small (3 to 10 cases each), so treat the percentages as a first indication. The whole session cost about 6 cents of Modal credit. The script is <code>research/experiments.py</code> and the raw results are in <code>research/results/2026-10-12.jsonl</code>.</p>
+
+      <h2>1. Our ledger against Modal's bill</h2>
+      <p>The gateway keeps a ledger: one line per model call with an estimated cost. Before this session it said <strong>$0.0026</strong> had been spent. Modal's bill said <strong>$0.0201</strong>. The budget hard stop was reading the ledger, so it would have let spending run to about eight times the limit.</p>
+      <p>To find the gap, the model machine was woken three times under controlled conditions, with the bill read before and after each:</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Wake</th><th class="num">Time in calls</th><th class="num">Time billed</th><th class="num">Cores billed (avg)</th><th class="num">Modal's charge</th></tr>
+          <tr><td>One tiny call</td><td class="num">8 s</td><td class="num">114 s</td><td class="num">4.0</td><td class="num">$0.0070</td></tr>
+          <tr><td>Two long replies, model left alone</td><td class="num">35 s</td><td class="num">112 s</td><td class="num">7.7</td><td class="num">$0.0123</td></tr>
+          <tr><td>Two long replies, limited to 4 threads</td><td class="num">31 s</td><td class="num">112 s</td><td class="num">4.0</td><td class="num">$0.0069</td></tr>
+        </table>
+      </div>
+      <p class="note">"Time billed" is worked out from Modal's memory charge, which is a flat rate per second the machine exists. "Cores billed" is the processor charge divided by that time.</p>
+
+      <h3>Cause one: the machine bills for much more than the calls</h3>
+      <p>Each wake was billed for 77 to 106 seconds beyond the calls themselves. We had set the machine to stay up 60 seconds after its last call, and starting and stopping added another 16 to 46 seconds. The ledger had only been counting the calls.</p>
+
+      <h3>Cause two: the model was using far more processor than we reserved</h3>
+      <p>We reserved 4 cores and priced calls at 4 cores. But Ollama uses every core it can see, and Modal charges for processor actually used above the reservation. While writing, the model was using about 19 cores. Limiting it to 4 threads changed nothing about writing speed (26 tokens per second limited, 23.5 unlimited, same 292-token reply) and cut that wake's cost by 44%.</p>
+
+      <h3>What was changed</h3>
+      <ul>
+        <li>The model is now limited to 4 threads, so a second of model time costs what the registry says it costs.</li>
+        <li>The ledger now charges each call for the idle and start/stop time around it.</li>
+        <li><strong>The hard stop now reads Modal's own meter</strong> and uses whichever is larger, that or the ledger. Modal's figure is the truth but arrives one to two minutes late; the ledger is instant but an estimate.</li>
+      </ul>
+      <p>On the next batch of 48 calls the ledger recorded $0.0183 against Modal's $0.0186 for the model machine.</p>
+      <p class="note">Still not in the ledger: the gateway's own small machine (about 6% of the bill so far) and sandboxes. Modal's meter covers both, so the hard stop does too. Because that meter lags, spending can overshoot the limit by whatever is spent in one to two minutes: under a cent at current rates.</p>
+
+      <h2>2. Getting a tool call out of the model</h2>
+      <p>An agent works by asking for tools: "read this file", "run this command". The smoke test showed this model formats such requests badly. Ten simple requests were tried four ways, each with four tools available (read a file, write a file, search files, run a shell command).</p>
+      <div class="scroll">
+        <table>
+          <tr><th>How the model was asked</th><th class="num">Reply usable as it came</th><th class="num">Right tool and details</th><th class="num">Avg seconds</th></tr>
+          <tr><td>Ollama's built-in tool feature</td><td class="num"><span class="bad">0 / 10</span></td><td class="num">5 / 10</td><td class="num">1.55</td></tr>
+          <tr><td>Our own instructions: "reply with one JSON object"</td><td class="num"><span class="bad">0 / 10</span></td><td class="num">8 / 10</td><td class="num">1.39</td></tr>
+          <tr><td>Our instructions, plus Ollama forced to output JSON</td><td class="num"><span class="good">10 / 10</span></td><td class="num">8 / 10</td><td class="num">0.85</td></tr>
+          <tr><td>Our instructions, plus output forced to match an exact shape</td><td class="num"><span class="good">10 / 10</span></td><td class="num">8 / 10</td><td class="num">1.01</td></tr>
+        </table>
+      </div>
+      <ul>
+        <li><strong>The built-in tool feature does not work with this model.</strong> It never used the proper channel. It wrote the call as text, more than half the time inside a code block, and twice invented tools that do not exist (one named <code>export</code>, one named <code>package.json</code>). It also needed more than twice as many prompt tokens, because the tool definitions are long.</li>
+        <li><strong>Our own instructions got the right answer more often</strong>, but every reply was wrapped in a code block or surrounded by explanation.</li>
+        <li><strong>Forcing JSON output removed the formatting problem entirely</strong>, and was the fastest. Forcing an exact shape did no better here.</li>
+        <li><strong>The two failures were the same two requests in every approach</strong>: "what does src/config.ts export?" (it searched for the word "export" instead of reading the file) and "list the files in the current directory" (it searched instead of running a command). That is weak judgement, which no formatting trick fixes.</li>
+      </ul>
+      <p>For the harness (step 4): describe tools in our own prompt, force JSON output through the gateway, and keep a tolerant parser as a backstop. The gateway gained a <code>response_format</code> option for this.</p>
+
+      <h2>3. How much the model can read</h2>
+      <p>A fact was placed at the very start of a prompt ("the project codename is BLUEHERON"), followed by increasing amounts of filler code, followed by a question about the fact.</p>
+      <div class="scroll">
+        <table>
+          <tr><th class="num">Prompt size (characters)</th><th class="num">Tokens the model reported reading</th><th class="num">Seconds</th><th>Recalled the fact?</th></tr>
+          <tr><td class="num">1,602</td><td class="num">526</td><td class="num">4.6</td><td><span class="good">Yes</span></td></tr>
+          <tr><td class="num">7,682</td><td class="num">2,526</td><td class="num">20.2</td><td><span class="good">Yes</span></td></tr>
+          <tr><td class="num">15,582</td><td class="num">2,050</td><td class="num">19.3</td><td><span class="bad">No</span> (answered "project127")</td></tr>
+          <tr><td class="num">23,482</td><td class="num">2,050</td><td class="num">19.5</td><td><span class="bad">No</span></td></tr>
+          <tr><td class="num">39,282</td><td class="num">2,050</td><td class="num">19.6</td><td><span class="bad">No</span></td></tr>
+        </table>
+      </div>
+      <ul>
+        <li><strong>The window is 4,096 tokens</strong>, roughly 12,000 characters of code. That is small for an agent: a few files and the conversation so far will fill it.</li>
+        <li><strong>Overflow is silent.</strong> There is no error. The prompt is cut down to about 2,050 tokens by dropping the beginning, and the model answers confidently from what is left. In an agent, the beginning holds the task and the tool instructions.</li>
+        <li><strong>Reading is slow with 4 threads</strong>: about 125 tokens per second, so a full window takes around half a minute per step.</li>
+      </ul>
+      <p>For the harness: it must count tokens itself and keep every request under the limit, because nothing downstream will warn it. The window can be made larger in Ollama's settings at a cost in memory and time; that was not tested.</p>
+      <p class="note">The smoke test reported reading speeds of 330 to 430 tokens per second. Those were tiny prompts on about 19 cores, so the two figures are not a like-for-like comparison.</p>
+
+      <h2>4. Using what a tool returns</h2>
+      <p>Three cases, each a conversation where the model had already called a tool and now sees the result. This is a very small sample.</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Situation</th><th>What the model did</th><th>Verdict</th></tr>
+          <tr><td>The file it read contains the answer (port 8080)</td><td>Gave the answer "port 8080", but put it in a slightly different place in the JSON than instructed</td><td>Right answer, shape drifted</td></tr>
+          <tr><td>The tool returned "file not found"</td><td>Ran <code>ls config.py</code> to check</td><td>Sensible; did not make up an answer</td></tr>
+          <tr><td>Asked "does the test suite pass?" after listing files</td><td>Searched files for the word "test" instead of running the tests</td><td>Indirect; did not get closer to the answer</td></tr>
+        </table>
+      </div>
+      <p>It can follow a conversation and react to a result, but the judgement weakness from finding 2 shows up again. The shape drift in the first case means forced JSON alone is not enough for nested replies; forcing the exact shape, or a tolerant parser, is still needed.</p>
+
+      <h2>5. Speed and waiting</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Measurement</th><th>Result</th></tr>
+          <tr><td>Writing speed (4 threads)</td><td>About 26 tokens per second</td></tr>
+          <tr><td>First call after the machine has been asleep</td><td>8 to 10 seconds for a short reply, about 5 of them waking up</td></tr>
+          <tr><td>Short call while the machine is awake</td><td>0.06 to 0.2 seconds</td></tr>
+          <tr><td>Creating a sandbox (step 2)</td><td>1.2 to 2.2 seconds once its image is cached</td></tr>
+          <tr><td>A command inside a sandbox</td><td>About 0.3 seconds; cloning a tiny repository took 0.5</td></tr>
+          <tr><td>Modal's bill catching up with reality</td><td>One to two minutes</td></tr>
+        </table>
+      </div>
+      <p>The lowest price of waking the model machine once is about 0.7 cents, however little it does: the single tiny call in finding 1 needed 3 seconds of model work and was billed for 114 seconds of machine. Work that keeps the machine busy is cheap by comparison: 48 calls in one sitting cost about 1.9 cents.</p>
+
+      <h2>What this says about our choices</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Choice</th><th>What is working</th><th>Where it limits us</th></tr>
+          <tr>
+            <td>Modal for everything</td>
+            <td>Machines really do start in seconds and cost nothing when off. Its bill can be read by our own code within a couple of minutes, which is what made this research possible.</td>
+            <td>Billing has rules we did not know: processor use above the reservation is charged, and so is idle and start/stop time. Our own estimates will always be estimates.</td>
+          </tr>
+          <tr>
+            <td>A gateway in front of the model</td>
+            <td>Both cost fixes were made in one place and apply to every future caller. The hard stop now rests on the vendor's meter.</td>
+            <td>The meter's delay means the stop can overshoot by a minute or two of spending.</td>
+          </tr>
+          <tr>
+            <td>A small model on CPU</td>
+            <td>Fast enough, and cheap per second. Four cores are sufficient.</td>
+            <td>Wrong tool in 2 of 10 trivial requests. If that rate held across the steps of a task, a five-step task would succeed about a third of the time; that is arithmetic from a small sample, and real tasks may be better or worse. The 4,096-token window is tight.</td>
+          </tr>
+          <tr>
+            <td>Writing our own harness</td>
+            <td>The approach that worked best (our own tool instructions plus forced JSON) is only available because we control the loop. Ollama's built-in route scored worst.</td>
+            <td>We own every edge case: token counting, truncation, reply repair.</td>
+          </tr>
+          <tr>
+            <td>Scaling to zero after 60 idle seconds</td>
+            <td>Nothing is billed while nobody uses the system.</td>
+            <td>Occasional single calls are the most expensive way to use it. Triage and supervisor calls should land while the machine is already awake for a run.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>Questions for later</h2>
+      <ul>
+        <li>Does a larger context window (set in Ollama) work acceptably on 4 cores and 4 GiB?</li>
+        <li>How much does a slightly larger model improve tool choice, and at what cost per run? This is the routing question for step 6.</li>
+        <li>Is 60 seconds the right idle window? Shorter saves money on single calls but risks a wake-up in the middle of a run.</li>
+        <li>Does Ollama's reuse of an already-read prompt make later steps of a run much faster than the 125 tokens per second measured here?</li>
+        <li>How closely does a sandbox's estimated cost match its bill? Three short test sandboxes were billed about $0.0011 in total, in line with the estimate, but that is too little data to say.</li>
+      </ul>
+    </div>
+  </details>
+</main>
+</body>
+</html>

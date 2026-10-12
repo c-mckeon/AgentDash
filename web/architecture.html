@@ -4,158 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentDash Architecture</title>
-<style>
-  :root {
-    --bg: #f6f7f9;
-    --surface: #ffffff;
-    --text: #1b1f24;
-    --muted: #5b6470;
-    --border: #d5dae1;
-    --accent: #0b6bcb;
-    --accent-soft: #e3effb;
-    --built: #1a7f4b;
-    --built-soft: #e2f4ea;
-    --later: #8a929d;
-    --code-bg: #eef0f3;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #14171b;
-      --surface: #1c2026;
-      --text: #e6e9ed;
-      --muted: #9aa3ae;
-      --border: #343a43;
-      --accent: #6cb2f5;
-      --accent-soft: #1b3350;
-      --built: #5fcf94;
-      --built-soft: #183526;
-      --later: #747c87;
-      --code-bg: #262b32;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #14171b;
-    --surface: #1c2026;
-    --text: #e6e9ed;
-    --muted: #9aa3ae;
-    --border: #343a43;
-    --accent: #6cb2f5;
-    --accent-soft: #1b3350;
-    --built: #5fcf94;
-    --built-soft: #183526;
-    --later: #747c87;
-    --code-bg: #262b32;
-  }
-
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
-  h1 { font-size: 1.7rem; margin: 0 0 4px; }
-  h2 { font-size: 1.05rem; margin: 28px 0 8px; }
-  p { margin: 0 0 12px; }
-  .lede { color: var(--muted); margin-bottom: 24px; }
-  code {
-    background: var(--code-bg);
-    padding: 1px 5px;
-    border-radius: 4px;
-    font: 0.88em ui-monospace, "Cascadia Code", Consolas, monospace;
-  }
-  pre {
-    background: var(--code-bg);
-    padding: 12px 14px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font: 0.86rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
-    margin: 0 0 12px;
-  }
-
-  details.step {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 10px;
-  }
-  details.step > summary {
-    cursor: pointer;
-    padding: 14px 16px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    font-weight: 600;
-    list-style: none;
-  }
-  details.step > summary::-webkit-details-marker { display: none; }
-  details.step > summary::before {
-    content: "▸";
-    color: var(--muted);
-    transition: transform 0.15s;
-  }
-  details.step[open] > summary::before { transform: rotate(90deg); }
-  details.step > summary .num { color: var(--muted); font-weight: 500; }
-  .body { padding: 0 16px 18px; border-top: 1px solid var(--border); }
-
-  .chip {
-    margin-left: auto;
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 2px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .chip.done { color: var(--built); background: var(--built-soft); border-color: transparent; }
-  .chip.current { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
-
-  .scroll { overflow-x: auto; }
-  svg.diagram { display: block; min-width: 720px; width: 100%; height: auto; }
-  .diagram text { fill: var(--text); font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
-  .diagram .t-title { font-weight: 600; }
-  .diagram .t-muted { fill: var(--muted); font-size: 12px; }
-  .diagram .box-built { fill: var(--built-soft); stroke: var(--built); stroke-width: 1.5; }
-  .diagram .box-todo { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
-  .diagram .box-later { fill: none; stroke: var(--later); stroke-width: 1.2; stroke-dasharray: 5 4; }
-  .diagram .zone { fill: none; stroke: var(--border); stroke-width: 1.5; }
-  .diagram .arrow { stroke: var(--text); stroke-width: 1.4; fill: none; }
-  .diagram .arrow-later { stroke: var(--later); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
-  .diagram .head { fill: var(--text); }
-  .diagram .head-later { fill: var(--later); }
-
-  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin: 8px 0 0; }
-  .legend span::before {
-    content: "";
-    display: inline-block;
-    width: 14px; height: 14px;
-    border-radius: 3px;
-    margin-right: 6px;
-    vertical-align: -2px;
-  }
-  .legend .l-built::before { background: var(--built-soft); border: 1.5px solid var(--built); }
-  .legend .l-todo::before { background: var(--accent-soft); border: 1.5px solid var(--accent); }
-  .legend .l-later::before { border: 1.5px dashed var(--later); }
-
-  dl.qa dt { font-weight: 600; margin-top: 12px; }
-  dl.qa dd { margin: 2px 0 0; color: var(--text); }
-
-  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; min-width: 620px; }
-  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
-  td:first-child { white-space: nowrap; }
-  ul { margin: 0 0 12px; padding-left: 20px; }
-  li { margin-bottom: 4px; }
-  .note { color: var(--muted); font-size: 0.9rem; }
-</style>
+<link rel="stylesheet" href="site.css">
 </head>
 <body>
 <main>
+  <nav class="tabs"><a href="architecture.html" aria-current="page">Architecture</a><a href="research.html">Research</a></nav>
   <h1>AgentDash architecture, step by step</h1>
   <p class="lede">One section per build step. Each shows what the system looked like at that point, what the step added, the questions that came up, and a snapshot of the project folder. The current step is open.</p>
+
+  <div class="latest">
+    <p class="when">Latest milestone · 12 October 2026</p>
+    <p><strong>Step 2 is done: the system can create a disposable computer, work in it, and throw it away.</strong> A sandbox starts on Modal in about two seconds, clones a public repository, has a file edited, hands back the change as a patch, and is destroyed. From inside, it can reach the gateway, which is the route the agent will use to talk to the model in step 4. Along the way, a first round of <a href="research.html">research</a> found that our cost tracking was recording about an eighth of the real bill; that is fixed, and the budget hard stop now reads Modal's own meter.</p>
+  </div>
 
   <!-- ============ STEP 0 ============ -->
   <details class="step">
@@ -172,9 +32,18 @@
   </details>
 
   <!-- ============ STEP 1 (current) ============ -->
-  <details class="step" open>
+  <details class="step">
     <summary><span class="num">Step 1</span> Model service and gateway <span class="chip done">Done</span></summary>
     <div class="body">
+
+      <h2>Corrected after research (12 October 2026)</h2>
+      <p>What follows is step 1 as first built. The <a href="research.html">research</a> done afterwards changed three things:</p>
+      <ul>
+        <li>The model is limited to 4 processor threads. Left alone it used about 19 cores, which Modal charges for; the limit gave the same writing speed at about half the cost.</li>
+        <li>The ledger charges each call for the idle and start/stop time around it, not only the call.</li>
+        <li>The budget hard stop uses the larger of our ledger and Modal's own meter. The ledger alone had been recording about an eighth of the real bill.</li>
+      </ul>
+      <p>The gateway also gained an option to force the model's reply to be JSON, which the harness will need.</p>
 
       <h2>Architecture at this step</h2>
       <p>Three things are built and running on Modal: a machine image containing Ollama and the Qwen model, a model service that starts a machine from that image whenever it is called, and the gateway, which is the only part with a public web address. A prompt sent to the gateway comes back with an answer, a cost, and the remaining budget.</p>
@@ -539,12 +408,228 @@ supervisor         ─┘</pre>
   </details>
 
   <!-- ============ LATER STEPS ============ -->
-  <details class="step">
-    <summary><span class="num">Step 2</span> Sandbox <span class="chip">Planned</span></summary>
+  <details class="step" open>
+    <summary><span class="num">Step 2</span> Sandbox <span class="chip done">Done</span></summary>
     <div class="body">
-      <h2>What this step will add</h2>
-      <p>A disposable computer per run, on Modal: create it, run a command in it, destroy it. Adds <code>sandbox-provider/</code> (the code that asks Modal for a sandbox) and <code>sandbox/</code> (the definition of what is installed on it).</p>
-      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+
+      <h2>Architecture at this step</h2>
+      <p>A sandbox is a disposable computer: created for one run, used, then destroyed. This step adds the code that asks Modal for one and the definition of what is installed on it. Nothing drives a sandbox automatically yet; a test script on the PC does it by hand. The orchestrator takes over in step 3 and the agent moves in at step 4.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 400" role="img" aria-label="Architecture at step 2: the sandbox provider asks Modal to create a sandbox; the sandbox clones a public repository from GitHub and can call the gateway, which forwards to the model service. The agent, orchestrator, dashboard, router and supervisor come in later steps.">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+            <marker id="ah2-later" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head-later" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <!-- Sandbox provider -->
+          <rect class="box-todo" x="20" y="56" width="210" height="150" rx="8"/>
+          <text class="t-title" x="36" y="80">Sandbox provider</text>
+          <text x="36" y="104">create · run a command</text>
+          <text x="36" y="124">destroy · report cost</text>
+          <text class="t-muted" x="36" y="152">Today: run by a test script</text>
+          <text class="t-muted" x="36" y="168">on the PC.</text>
+          <text class="t-muted" x="36" y="188">Step 3: run by the orchestrator.</text>
+
+          <!-- GitHub -->
+          <rect class="box-built" x="20" y="270" width="210" height="70" rx="8"/>
+          <text class="t-title" x="36" y="294">GitHub</text>
+          <text class="t-muted" x="36" y="316">a public repository to work on</text>
+
+          <!-- Modal zone -->
+          <rect class="zone" x="290" y="20" width="590" height="250" rx="12"/>
+          <text class="t-title" x="306" y="44">Modal cloud</text>
+
+          <!-- Sandbox -->
+          <rect class="box-todo" x="310" y="60" width="230" height="190" rx="8"/>
+          <text class="t-title" x="326" y="84">Sandbox (one per run)</text>
+          <text x="326" y="110">Node, git, ripgrep</text>
+          <text x="326" y="130">/workspace holds the repo</text>
+          <text class="t-muted" x="326" y="160">1 core, 1 GiB, no secrets.</text>
+          <text class="t-muted" x="326" y="176">Starts in about 2 seconds.</text>
+          <text class="t-muted" x="326" y="204">Destroys itself after 10</text>
+          <text class="t-muted" x="326" y="220">minutes if we forget to.</text>
+
+          <!-- Gateway -->
+          <rect class="box-built" x="580" y="60" width="130" height="190" rx="8"/>
+          <text class="t-title" x="594" y="84">Gateway</text>
+          <text class="t-muted" x="594" y="110">key check</text>
+          <text class="t-muted" x="594" y="128">budget stop</text>
+          <text class="t-muted" x="594" y="146">ledger</text>
+
+          <!-- Model service -->
+          <rect class="box-built" x="740" y="60" width="124" height="190" rx="8"/>
+          <text class="t-title" x="752" y="84">Model service</text>
+          <text class="t-muted" x="752" y="110">Ollama</text>
+          <text class="t-muted" x="752" y="128">Qwen 1.5B</text>
+          <text class="t-muted" x="752" y="146">4 threads</text>
+
+          <!-- provider -> sandbox -->
+          <path class="arrow" d="M230 130 L308 130" marker-end="url(#ah2)"/>
+          <text class="t-muted" x="236" y="120">commands</text>
+
+          <!-- sandbox -> github (clone) -->
+          <path class="arrow" d="M400 250 L400 305 L232 305" marker-end="url(#ah2)"/>
+          <text class="t-muted" x="262" y="296">clones from</text>
+
+          <!-- sandbox -> gateway -->
+          <path class="arrow" d="M540 155 L578 155" marker-end="url(#ah2)"/>
+          <!-- gateway -> model -->
+          <path class="arrow" d="M710 155 L738 155" marker-end="url(#ah2)"/>
+
+          <!-- Later -->
+          <text class="t-muted" x="430" y="302">Later steps</text>
+          <rect class="box-later" x="430" y="312" width="100" height="56" rx="8"/>
+          <text x="440" y="336">Orchestrator</text>
+          <text class="t-muted" x="440" y="354">step 3</text>
+          <rect class="box-later" x="540" y="312" width="100" height="56" rx="8"/>
+          <text x="550" y="336">Agent</text>
+          <text class="t-muted" x="550" y="354">step 4</text>
+          <rect class="box-later" x="650" y="312" width="100" height="56" rx="8"/>
+          <text x="660" y="336">Dashboard</text>
+          <text class="t-muted" x="660" y="354">step 5</text>
+          <rect class="box-later" x="760" y="312" width="120" height="56" rx="8"/>
+          <text x="770" y="336">Router, supervisor</text>
+          <text class="t-muted" x="770" y="354">steps 6, 7</text>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built in earlier steps</span>
+        <span class="l-todo">Added in this step</span>
+        <span class="l-later">Later steps</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Piece</th><th>What it is for</th></tr>
+          <tr><td>Sandbox image</td><td>The list of what every sandbox starts with: Node (the agent will be written in TypeScript and run there), git (to fetch the repository and produce the patch) and ripgrep (fast file search for the agent).</td></tr>
+          <tr><td>Sandbox provider</td><td>Four operations behind a plain interface: create a sandbox, run a command in it, destroy it, and report how long it lived and roughly what it cost. The rest of the system will only ever see that interface, so a different vendor could be swapped in.</td></tr>
+          <tr><td>Safety limits</td><td>Every sandbox has a maximum lifetime (10 minutes by default) enforced by Modal, so a forgotten one cannot keep billing. Every command has a time limit. Processor use is capped at what is reserved, so a sandbox-second has a predictable price.</td></tr>
+        </table>
+      </div>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li>A sandbox was created in 1.2 to 2.2 seconds once its image had been built.</li>
+        <li>Inside it: git, ripgrep and Node all present; a public repository cloned in half a second; a file edited; <code>git diff</code> returned the change as a patch.</li>
+        <li>From inside the sandbox, the gateway answered. That is the path the agent will use to reach the model.</li>
+        <li>A failing command reported its exit code and error text. A command that ran past its time limit was stopped and reported as timed out, and the sandbox was still usable afterwards.</li>
+        <li>After destroy, Modal reported the sandbox as stopped and listed no running containers. Each test lived 7 to 10 seconds and cost a few hundredths of a cent.</li>
+      </ul>
+      <p class="note">One surprise: when a command hits its time limit, Modal's library sometimes raises an error and sometimes reports the command as killed. The provider handles both and reports one consistent result.</p>
+
+      <h2>Questions this version raises</h2>
+      <dl class="qa">
+        <dt>Why does each run need its own computer?</dt>
+        <dd>The agent runs shell commands and edits files that an AI model chose. A sandbox means the worst it can do is damage a machine that is about to be deleted anyway, and one run cannot see or disturb another.</dd>
+
+        <dt>Why is this part TypeScript when the gateway is Python?</dt>
+        <dd>The plan is TypeScript everywhere. The gateway and model service are Python only because they run inside Modal, which is built around Python. The sandbox provider runs on our side (later inside the orchestrator), and Modal offers a TypeScript library for creating sandboxes, so the plan holds here.</dd>
+
+        <dt>Does the sandbox hold any secrets?</dt>
+        <dd>No. It clones a public repository, so it needs no git credentials. When the agent arrives it will carry only a short-lived pass for the gateway.</dd>
+
+        <dt>Is sandbox cost inside the budget hard stop?</dt>
+        <dd>Yes, since the research changes: the hard stop reads Modal's meter for the whole workspace, which includes sandboxes. The gateway's own ledger does not list sandbox time yet; the orchestrator will record it in step 3.</dd>
+
+        <dt>Still open</dt>
+        <dd>The live check is run from the PC. Once the orchestrator exists it should run in the cloud like everything else.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">New or changed since step 1 (12 October 2026). Files not listed are as described under step 1.</p>
+<pre>AgentDash/
+├── package.json, package-lock.json, tsconfig.json     new
+├── node_modules/                                      new (not in git)
+├── sandbox/
+│   └── image.ts                                       new
+├── sandbox-provider/
+│   ├── types.ts                                       new
+│   ├── pricing.ts                                     new
+│   ├── modal.ts                                       new
+│   └── try-it.ts                                      new
+├── research/
+│   ├── experiments.py                                 new
+│   └── results/2026-10-12.jsonl                       new
+├── gateway/core.py, gateway/main.py                   changed
+├── model-server/serve.py                              changed
+├── tests/
+│   ├── test_gateway_core.py                           changed
+│   └── sandbox-pricing.test.ts                        new
+└── web/
+    ├── site.css                                       new
+    └── research.html                                  new</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr>
+            <td><code>sandbox/image.ts</code></td>
+            <td>Says what is installed on a sandbox: the base system and the setup commands.</td>
+            <td>Read by <code>sandbox-provider/modal.ts</code>, which hands it to Modal. Modal builds it once and reuses it.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/types.ts</code></td>
+            <td>The interface: what any sandbox provider must be able to do, with no mention of Modal.</td>
+            <td>The orchestrator and agent will depend on this file only.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/modal.ts</code></td>
+            <td>The Modal version of that interface. Sets the size, the processor cap, the maximum lifetime and command time limits.</td>
+            <td>Talks to Modal using the login token on the PC. Creates sandboxes in the Modal app <code>agentdash-sandboxes</code>.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/pricing.ts</code></td>
+            <td>Modal's sandbox prices and the arithmetic for estimating what a sandbox cost.</td>
+            <td>Used by <code>modal.ts</code>; checked by <code>tests/sandbox-pricing.test.ts</code>.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/try-it.ts</code></td>
+            <td>The live check described above. Run with <code>npm run sandbox:try</code>.</td>
+            <td>Reads the gateway's address from <code>.env</code> to test the sandbox-to-gateway path.</td>
+          </tr>
+          <tr>
+            <td><code>package.json</code>, <code>package-lock.json</code></td>
+            <td>The list of TypeScript-side dependencies (Modal's library, TypeScript itself) and their exact versions.</td>
+            <td><code>npm install</code> reads them to fill <code>node_modules/</code>, which is not stored in git.</td>
+          </tr>
+          <tr>
+            <td><code>tsconfig.json</code></td>
+            <td>Settings for the TypeScript checker.</td>
+            <td>Used by <code>npm run typecheck</code>. Node runs the <code>.ts</code> files directly, so there is no build step.</td>
+          </tr>
+          <tr>
+            <td><code>research/</code></td>
+            <td>The experiment script and its raw results, by date.</td>
+            <td>Calls the gateway like any other client. Written up on the Research tab.</td>
+          </tr>
+          <tr>
+            <td><code>web/site.css</code>, <code>web/research.html</code></td>
+            <td>Shared styling for the site, and the Research tab.</td>
+            <td>Published by GitHub Pages with the rest of <code>web/</code>.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>How the pieces connect</h2>
+<pre>try-it.ts (later: the orchestrator)
+        │  uses the interface in types.ts
+        ▼
+sandbox-provider/modal.ts ──(Modal library, login token)──► Modal
+        │                                                    │ builds the image from
+        │                                                    │ sandbox/image.ts, once
+        │  create                                            ▼
+        ├───────────────────────────────────────────► SANDBOX
+        │  run: git clone ───────────────────────────►   │ ──► GitHub (public repo)
+        │  run: edit, git diff ◄── patch ────────────────│
+        │  run: curl gateway ────────────────────────►   │ ──► GATEWAY ──► MODEL SERVICE
+        │  destroy                                       ▼
+        └───────────────────────────────────────────► gone; lifetime and cost reported</pre>
     </div>
   </details>
 

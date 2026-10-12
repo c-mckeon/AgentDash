@@ -61,14 +61,27 @@ class Model:
         self.server.terminate()
 
     @modal.method()
-    def chat(self, model: str, messages: list, tools: list | None = None, options: dict | None = None) -> dict:
-        """Forward one chat request to Ollama and return its reply plus timing."""
+    def chat(
+        self,
+        model: str,
+        messages: list,
+        tools: list | None = None,
+        options: dict | None = None,
+        response_format: str | dict | None = None,
+    ) -> dict:
+        """Forward one chat request to Ollama and return its reply plus timing.
+
+        `response_format` is "json" or a JSON schema; Ollama then constrains
+        the model's output to match it.
+        """
         if model not in MODELS:
             return {"error": f"model {model!r} is not installed on this machine"}
 
         body = {"model": model, "messages": messages, "stream": False, "options": options or {}}
         if tools:
             body["tools"] = tools
+        if response_format:
+            body["format"] = response_format
         request = urllib.request.Request(
             OLLAMA_URL + "/api/chat",
             data=json.dumps(body).encode(),

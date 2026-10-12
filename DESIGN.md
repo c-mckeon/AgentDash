@@ -172,6 +172,25 @@ Conclusions:
 
 Verified live: answer with usage and cost returned; missing and wrong keys refused (401); invalid request refused (400); with the limit temporarily below the amount spent, the request was refused (402) and the model was not called; ledger persisted across redeploys. First call after idle took 8–10 s, about half of it waking the machine; warm calls with short replies took under 0.2 s. 19 unit tests cover `core.py`.
 
+### 26. Changes from the first research session (2026-10-12)
+Full write-up: `web/research.html`. Raw data: `research/results/2026-10-12.jsonl`. These amend decision 25.
+- **Ledger undercount found and fixed.** The ledger had recorded $0.0026 against Modal's $0.0201. Causes: Modal bills CPU used above the reservation and Ollama was using about 19 cores; and each wake is billed for the 60-second idle window plus 16–46 s of start/stop.
+- **Model pinned to 4 threads** (`num_threads` in the registry, passed to Ollama as `num_thread`). Same writing speed (about 26 tokens per second), about half the cost per wake. Prompt reading is about 125 tokens per second at this setting.
+- **Ledger charges wake overhead** (`wake_overhead_seconds = 30`, an estimate from two measurements) in addition to the idle window.
+- **Hard stop uses the vendor's meter.** The gateway reads Modal's metered cost for the month (`Workspace.billing.summary`, cached for 60 s) and stops on the larger of that and the ledger. The meter covers the whole workspace, including sandboxes and the gateway itself, and lags by one to two minutes. The ledger remains the source for per-run and per-role attribution.
+- **Gateway accepts `response_format`** (`"json"` or a JSON schema), passed to Ollama as `format`.
+- **Harness protocol (for step 4):** describe tools in our own system prompt and force JSON output. Ollama's built-in tool feature produced no structured tool calls with this model (0 of 10) and the fewest correct calls (5 of 10); our prompt plus forced JSON gave 10 of 10 parseable and 8 of 10 correct. A tolerant parser is still needed as a backstop.
+- **Context limit (for step 4):** the model's window is 4,096 tokens and overflow is silent (the start of the prompt is dropped, no error). The harness must count tokens and stay under the limit itself.
+
+### 27. Step 2 as built: sandbox provider on Modal (2026-10-12)
+- **Language:** TypeScript, as planned, using Modal's JavaScript library (`modal` 0.11.0). Node 24 runs the `.ts` files directly; there is no build step. `npm run typecheck`, `npm test`, `npm run sandbox:try`.
+- **`sandbox/image.ts`:** `node:22-slim` plus git, ripgrep, curl and CA certificates; working directory `/workspace`.
+- **`sandbox-provider/`:** `types.ts` is the vendor-neutral interface (create, exec, destroy with a lifetime and cost report); `modal.ts` implements it; `pricing.ts` holds Modal's sandbox rates ($0.1419 per core-hour, $0.024 per GiB-hour).
+- **Defaults:** 1 core with the CPU limit set equal to the reservation (so burst use is not billed), 1 GiB, maximum lifetime 10 minutes enforced by Modal, 60-second command timeout. Sandboxes are tagged with their run id.
+- **Timeouts:** Modal's library signals a command timeout inconsistently (an exception in one run, exit code 137 in others). The provider normalises both to `timedOut: true` with exit code 124.
+- **Verified live:** create in 1.2–2.2 s with a cached image; clone, edit and `git diff` of a public repository; the gateway reachable from inside; non-zero exit and timeout reported correctly; sandbox stopped after destroy.
+- **Not yet done:** sandbox time is not written to the gateway's ledger (the orchestrator will do this in step 3); the live check runs from the developer's PC.
+
 ## Defaults (confirmed 2026-10-12)
 
 Chosen to keep v1 small.
