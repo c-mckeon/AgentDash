@@ -7,7 +7,20 @@
   const FIRST_FILE = "agent/loop.ts";
   const tree = document.getElementById("code-tree");
   const detail = document.getElementById("code-detail");
-  const switcher = document.getElementById("code-level");
+  const LEVELS = [
+    ["overview", "High-level explanation"],
+    ["detail", "Detailed pseudocode"],
+  ];
+  // Shown above the detailed pseudocode, for readers who do not program.
+  const WORDS = [
+    ["FUNCTION", "a named set of steps. Other code runs it by name, hands it some values, and gets a result back."],
+    ["GOES IN / COMES OUT", "the values a function is handed, and the result it hands back."],
+    ["Record", "a bundle of named values, for example a tool result with “ok” and “output”."],
+    ["List", "several values kept in order."],
+    ["Text", "any run of characters. Programmers call it a string."],
+    ["Event", "a record describing one thing that happened, sent out so the dashboard can show it."],
+    ["Numbered steps", "happen in order. Indented steps belong to the step above them."],
+  ];
   let files = null;
   let current = null;
   // "overview" explains each part of a file; "detail" is the function-by-function plan.
@@ -44,7 +57,6 @@
     for (const [name, child] of [...folder.folders].sort(([a], [b]) => a.localeCompare(b))) {
       const item = make("li");
       const fold = make("details");
-      fold.open = true;
       fold.append(make("summary", "", `${name}/`), drawFolder(child));
       item.append(fold);
       list.append(item);
@@ -94,24 +106,75 @@
 
     const pseudo = make("div", "pseudo-pane");
     // The detailed level opens with the plan: what the file needs and how its parts connect.
+    if (level === "detail" && shown.length) {
+      const words = make("details", "words");
+      const list = make("dl");
+      for (const [term, meaning] of WORDS) list.append(make("dt", "", term), make("dd", "", meaning));
+      words.append(make("summary", "", "Words used in this pseudocode"), list);
+      pseudo.append(words);
+    }
     if (level === "detail" && file.plan) pseudo.append(make("div", "plan", file.plan));
     shown.forEach((chunk, index) => {
-      const card = make("button", "chunk");
-      card.type = "button";
+      // Not a real button: text inside a button cannot be selected and copied.
+      const card = make("div", "chunk");
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      card.setAttribute("aria-pressed", "false");
       const where = chunk.ranges.map(([from, to]) => (from === to ? `${from}` : `${from}–${to}`)).join(", ");
       card.append(make("span", "chunk-title", chunk.title), make("span", "chunk-lines", `lines ${where}`), make("span", "chunk-text", chunk.text));
-      card.addEventListener("click", () => selectChunk(index, true));
+      card.addEventListener("click", () => {
+        // Dragging to select text ends in a click too; leave the selection alone.
+        if (!String(window.getSelection()).trim()) selectChunk(index, true);
+      });
+      card.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectChunk(index, true);
+        }
+      });
       pseudo.append(card);
     });
 
     if (!shown.length) pseudo.append(make("p", "note", "No pseudocode has been written for this file yet."));
 
     const head = make("div", "code-head");
-    head.append(make("h2", "", path), make("p", "", file.summary));
+    const switcher = make("div", "level-switch");
+    switcher.setAttribute("role", "group");
+    switcher.setAttribute("aria-label", "Level of detail");
+    for (const [value, label] of LEVELS) {
+      const button = make("button", "", label);
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(value === level));
+      button.addEventListener("click", () => {
+        if (value === level) return;
+        level = value;
+        showFile(path, false);
+      });
+      switcher.append(button);
+    }
+    head.append(make("h2", "", path), make("p", "", file.summary), switcher);
+
+    const copy = make("button", "copy", "Copy all");
+    copy.type = "button";
+    copy.hidden = !shown.length;
+    copy.addEventListener("click", async () => {
+      const parts = shown.map((chunk) => `${chunk.title}\n${chunk.text}`);
+      if (level === "detail" && file.plan) parts.unshift(file.plan);
+      try {
+        await navigator.clipboard.writeText(`${path}\n\n${parts.join("\n\n")}\n`);
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Copy failed: select the text instead";
+      }
+      setTimeout(() => (copy.textContent = "Copy all"), 2000);
+    });
+    const title = make("h3", "", level === "detail" ? "Detailed pseudocode" : "High-level explanation");
+    title.append(copy);
+
     const columns = make("div", "code-columns");
     const left = make("div");
     const right = make("div");
-    left.append(make("h3", "", level === "detail" ? "Detailed pseudocode" : "High-level explanation"), pseudo);
+    left.append(title, pseudo);
     right.append(make("h3", "", `Actual code · ${lines.length} lines`), code);
     columns.append(left, right);
     detail.replaceChildren(head, columns);
@@ -138,18 +201,6 @@
       list.scrollTo({ top: cards[index].offsetTop - 12, behavior: "smooth" });
     }
   }
-
-  // ---------------------------------------------------------------- level switch
-
-  switcher.addEventListener("click", (event) => {
-    const button = event.target.closest("button[data-level]");
-    if (!button || button.dataset.level === level) return;
-    level = button.dataset.level;
-    for (const other of switcher.querySelectorAll("button")) {
-      other.setAttribute("aria-pressed", String(other === button));
-    }
-    if (current) showFile(current.path, false);
-  });
 
   // ---------------------------------------------------------------- loading
 

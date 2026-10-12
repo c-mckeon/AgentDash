@@ -230,8 +230,7 @@ table.cost { min-width: 0; }
 main[data-tab="pseudocode"] { max-width: 1500px; }
 .code-tree { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
 .code-tree ul { list-style: none; margin: 0; padding-left: 18px; }
-.code-tree > ul { padding-left: 0; columns: 5 200px; column-gap: 24px; }
-.code-tree > ul > li { break-inside: avoid; }
+.code-tree > ul { padding-left: 0; }
 .code-tree li { margin: 0; }
 .code-tree summary { cursor: pointer; padding: 2px 0; font-weight: 600; }
 .code-tree button.file {
@@ -266,8 +265,19 @@ main[data-tab="pseudocode"] { max-width: 1500px; }
   .pseudo-pane, .code-pane { height: 60vh; }
 }
 .code-tree button.file.bare { color: var(--later); }
-.level-switch { display: inline-flex; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.level-switch { display: inline-flex; margin: 4px 0 6px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .level-switch button { background: var(--surface); color: var(--muted); border: 0; padding: 7px 14px; font: inherit; font-size: 0.92rem; cursor: pointer; }
 .level-switch button + button { border-left: 1px solid var(--border); }
 .level-switch button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
 .plan { white-space: pre-wrap; margin-bottom: 8px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; font: 0.84rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.chunk { box-sizing: border-box; user-select: text; }
+.chunk:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.plan { user-select: text; }
+.code-columns h3 { display: flex; align-items: center; justify-content: space-between; min-height: 26px; }
+button.copy { background: var(--surface); color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 2px 10px; font: inherit; font-size: 0.78rem; text-transform: none; letter-spacing: 0; cursor: pointer; }
+button.copy:hover { color: var(--accent); border-color: var(--accent); }
+details.words { margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.88rem; }
+details.words summary { cursor: pointer; font-weight: 600; }
+details.words dl { margin: 8px 0 0; }
+details.words dt { font-weight: 600; margin-top: 6px; }
+details.words dd { margin: 0; color: var(--muted); }

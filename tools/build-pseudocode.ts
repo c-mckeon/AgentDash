@@ -62,9 +62,9 @@ function parseNotes(lengths: Map<string, number>): Map<string, Note> {
     for (const line of read(join(NOTES_DIR, name)).split("\n")) {
       if (line.startsWith("=== ")) {
         path = line.slice(4).trim();
-        if (notes.has(path)) throw new Error(`${path} has notes twice`);
         if (!lengths.has(path)) throw new Error(`${name} has notes for ${path}, which is not in the repository`);
-        note = { summary: "", chunks: [], plan: "", detail: [] };
+        // A file's two levels may be written in separate notes files.
+        note = notes.get(path) ?? { summary: "", chunks: [], plan: "", detail: [] };
         chunk = null;
         detailed = false;
         notes.set(path, note);

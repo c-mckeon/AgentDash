@@ -1,0 +1,744 @@
+=== agent/main.ts
+--- detail
+GOAL
+The orchestrator starts this file inside the sandbox. Its job is
+to plug the thinking part of the agent (loop.ts) into the real
+world: the gateway on the network, the files in the repository,
+and the line-by-line output the orchestrator is reading.
+
+THE PARTS WE NEED
+1. Settings. Five values the orchestrator leaves for us before
+   starting the program: where the gateway is, our pass, the task,
+   the repository folder, and the step limit.
+2. chat. The only function written in this file. It sends the
+   conversation to the model and brings back the answer.
+3. One starting line that runs the loop and hands it three
+   abilities: ask the model, use a tool, report an event.
+
+WHO USES WHOM
+- orchestrator/run.ts starts this file and reads what it prints.
+- This file runs runAgent, which lives in loop.ts.
+- runAgent calls back into chat (here) and runTool (tools.ts)
+  whenever it needs them.
+
+@ 6-10 | Bring in what other files already provide
+We do not rewrite things that exist elsewhere. We bring in:
+- MAX_REPLY_TOKENS from context.ts: the number 400, the longest
+  reply we allow the model to write.
+- runAgent from loop.ts: the loop itself.
+- ChatResult from loop.ts: the agreed form of an answer from chat.
+- REPLY_SCHEMA from protocol.ts: the rule describing what a valid
+  reply looks like.
+- runTool from tools.ts: the function that performs a tool.
+
+@ 12-16 | Settings: read our orders
+The environment is a small table of named values that whoever
+starts a program can fill in. The orchestrator fills in five.
+
+1. Read GATEWAY_URL, RUN_PASS, TASK, REPO_DIR and MAX_STEPS.
+2. If any of the first four is empty, we cannot work:
+   a. Print one event saying the run finished because the agent
+      started without its settings.
+   b. Stop the program with exit code 2. (Any exit code other
+      than 0 means "something went wrong".)
+
+Why print an event instead of just crashing: the orchestrator
+stores events, so the reason shows up on the dashboard.
+
+@ 18-18 | chat: what this function is
+FUNCTION chat
+GOES IN:   the conversation so far (a list of messages)
+COMES OUT: a ChatResult, which is one of two records:
+           - success: ok is yes, plus the model's text and the
+             usage figures (time, tokens, cost)
+           - failure: ok is no, plus a status number and an
+             error message
+PROMISE:   chat never crashes. Whatever goes wrong, it hands back
+           a failure record, and the loop decides what to do.
+
+@ 19-25 | chat, step 1: send the request
+1. Send a web request to the gateway's /v1/chat address.
+2. Attach our run pass, so the gateway knows which run is asking
+   and that we are allowed to.
+3. In the body of the request, put:
+   - the conversation
+   - the reply rule (REPLY_SCHEMA), so the model can only answer
+     with a tool call
+   - the reply length limit, 400 tokens
+   - temperature 0, which removes randomness: the same question
+     gets the same answer
+4. If nothing comes back within 180 seconds, give up.
+
+@ 26-28 | chat, step 2: read the answer
+5. Read the gateway's answer.
+6. If the gateway reported a problem, hand back a failure record
+   holding its status number and its error message.
+   Status 402 is the gateway's way of saying the month's budget
+   is spent.
+7. Otherwise hand back a success record holding the model's text
+   and the usage figures. If either is missing, use an empty one
+   rather than failing.
+
+@ 29-32 | chat, step 3: if the network itself fails
+8. If any step above broke (no connection, the 180 seconds ran
+   out, the answer was garbled), catch that here and hand back a
+   failure record with status 0 and a description of what broke.
+
+@ 34-39 | Start the loop
+Run runAgent, giving it the task and four things it needs:
+- chat: the function above.
+- runTool: the tool function from tools.ts, with the repository
+  folder already filled in, so the loop never has to know where
+  the repository is.
+- emit: "print this event as one line of text". The orchestrator
+  reads those lines as they appear.
+- maxSteps: MAX_STEPS turned into a number, or 8 if none was set.
+
+Then wait until runAgent is done. Nothing more happens after
+that: the loop has already printed its own final event.
+
+=== agent/loop.ts
+--- detail
+GOAL
+Get a task done by a model that can only produce text. We do it
+in turns: ask the model which tool to use, use it, tell the model
+what happened, ask again. We must always end with a clear reason,
+even if the model never says it is finished.
+
+THE PARTS WE NEED
+1. Five agreed forms of data (described below, one by one):
+   ChatResult, StopReason, AgentEvent, LoopDeps, Outcome.
+2. Two limits on our patience.
+3. runAgent: the one function other files use.
+4. stop: a small function inside runAgent that ends the run
+   properly.
+
+WHO USES WHOM
+- main.ts runs runAgent and supplies the real chat, runTool
+  and emit.
+- runAgent uses fitMessages (context.ts) before each question,
+  systemPrompt and parseReply (protocol.ts) to write the
+  instructions and read replies, and clip (tools.ts) to shorten
+  text.
+
+A DESIGN CHOICE
+runAgent never touches the network or files itself. It is handed
+functions that do. In tests we hand it a pretend model with
+scripted answers, so the loop can be checked without paying for
+a real model.
+
+WHAT THIS CODE CREATES WHILE RUNNING
+- messages: the conversation, which grows by two entries a turn.
+- events: a small record for every reply, tool call, tool
+  result, unreadable reply, and the ending.
+- one Outcome at the very end.
+
+@ 6-11 | Bring in what other files already provide
+- fitMessages and the Message form, from context.ts
+- parseReply and systemPrompt, and the ToolCall form, from
+  protocol.ts
+- clip, and the ToolResult form, from tools.ts
+
+@ 13-15 | ChatResult: the answer to one question
+This only describes data; it does nothing by itself.
+A ChatResult is one of two records:
+- success: ok is yes, content is the model's text, usage is the
+  gateway's figures
+- failure: ok is no, status is a number, error is a message
+Made by chat in main.ts. Read by runAgent.
+
+@ 17-17 | StopReason: the six ways a run can end
+- finished: the model said it was done
+- max_steps: we ran out of allowed turns
+- stuck: the model made the same call three times in a row
+- parse_errors: three replies in a row could not be read
+- budget_exhausted: the gateway refused because the money is spent
+- model_error: asking the model failed for any other reason
+The orchestrator turns this into the run's final status.
+
+@ 19-23 | AgentEvent: one thing worth reporting
+A record with:
+- type: model, tool_call, tool_result, parse_error or finished
+- step: which turn it happened in
+- any other details that fit that type
+These are what you see in the dashboard's feed.
+
+@ 25-30 | LoopDeps: what runAgent must be given
+A record holding the four things runAgent depends on:
+- chat: a function. Give it the conversation, get a ChatResult.
+- runTool: a function. Give it a tool call, get a ToolResult.
+- emit: a function. Give it an event; it reports it.
+- maxSteps: a number, the most turns allowed.
+
+@ 32-36 | Outcome: what runAgent hands back
+A record with:
+- reason: one of the six StopReasons
+- steps: how many turns were used
+- summary: optional text, either the model's own summary or an
+  error message
+
+@ 38-41 | Two limits on our patience
+REPEAT_LIMIT is 3: the same call three times in a row means stuck.
+PARSE_ERROR_LIMIT is 3: three unreadable replies in a row means
+give up.
+
+@ 43-50 | runAgent: set up before the first turn
+FUNCTION runAgent
+GOES IN:   the task (text), and a LoopDeps record
+COMES OUT: an Outcome
+
+1. Start the conversation as a list of two messages:
+   a. the instructions and tool list (written by systemPrompt)
+   b. "Task: " followed by the task
+   context.ts promises never to remove these two.
+2. Set up three things to remember between turns:
+   - lastCall: the previous tool call, starting empty
+   - repeats: how many times in a row it has been made, from 0
+   - parseErrors: unreadable replies in a row, from 0
+
+@ 52-55 | stop: the only way out
+A small function inside runAgent.
+GOES IN:   the turn number, a reason, an optional summary
+COMES OUT: the Outcome
+1. Report a "finished" event carrying the reason.
+2. Build the Outcome and hand it back.
+Every exit below goes through stop. That guarantees a run can
+never end silently.
+
+@ 57-61 | Each turn, part 1: ask the model
+Repeat the following for turn 1, 2, 3 ... up to maxSteps:
+
+3. Make a copy of the conversation trimmed to fit the model's
+   memory (fitMessages), and send that copy with chat.
+   We keep the full conversation ourselves.
+4. If chat handed back a failure:
+   - status 402: stop with reason budget_exhausted
+   - anything else: stop with reason model_error
+
+@ 62-63 | Each turn, part 2: record what the model said
+5. Report a "model" event with the reply (shortened to 600
+   characters) and the usage figures.
+6. Add the reply to the conversation in full, marked as coming
+   from the assistant. The model must see exactly what it said.
+
+@ 65-75 | Each turn, part 3: can we read the reply?
+7. Ask parseReply to read the reply. It hands back either a tool
+   call or an error message.
+8. If it is an error:
+   a. Report a "parse_error" event.
+   b. Add 1 to parseErrors. If that makes 3, stop with reason
+      parse_errors.
+   c. Add a message to the conversation telling the model what
+      was wrong and showing an example of a correct reply.
+   d. Skip the rest of this turn and start the next one.
+9. If it could be read, set parseErrors back to 0.
+
+@ 77-79 | Each turn, part 4: is the model finished?
+10. Report a "tool_call" event with the tool's name and arguments.
+11. If the tool is "finish", stop with reason finished and the
+    model's summary.
+    finish is not a real tool. It is the model's signal to us.
+
+@ 81-84 | Each turn, part 5: is the model going in circles?
+12. Write the call out as one piece of text, so two calls can be
+    compared exactly.
+13. If it matches lastCall, add 1 to repeats.
+    If not, set repeats to 1.
+14. Remember this call as lastCall.
+15. If repeats has reached 3, stop with reason stuck.
+
+@ 86-88 | Each turn, part 6: use the tool and tell the model
+16. Run the tool with runTool. It hands back a ToolResult:
+    whether it worked, and some text.
+17. Report a "tool_result" event (text shortened to 600
+    characters).
+18. Add "Tool result:" and the text to the conversation, so the
+    model sees it on the next turn.
+Then go back to step 3 for the next turn.
+
+@ 90-90 | If the turns run out
+19. If all the allowed turns were used and the model never called
+    finish, stop with reason max_steps.
+
+=== agent/protocol.ts
+--- detail
+GOAL
+Agree on a language between our agent and the model. Three things
+must be settled: which tools exist, how we tell the model about
+them, and how we read what it sends back.
+
+Our research found that this small model ignores Ollama's built-in
+way of offering tools, and sometimes bends the reply format. So we
+describe the tools in our own instructions, force replies to be
+JSON, and read them forgivingly.
+
+(JSON is a common way of writing data as text. A record is
+written in curly braces as names and values, for example
+{"tool": "read_file", "args": {"path": "README.md"}}.)
+
+THE PARTS WE NEED
+1. TOOLS: a table listing every tool, with a sentence about it
+   and the names of its arguments.
+2. REPLY_SCHEMA: a rule describing what a valid reply looks like.
+3. systemPrompt: a function that writes the instructions.
+4. parseReply: a function that turns the model's text into a
+   tool call, or explains why it could not.
+5. Three small functions that parseReply relies on:
+   firstJsonObject, isObject and plainValue.
+
+WHO USES WHOM
+- loop.ts runs systemPrompt once, and parseReply on every reply.
+- main.ts sends REPLY_SCHEMA with every question.
+- tools.ts receives the finished tool call and carries it out.
+
+A DESIGN CHOICE
+TOOLS is the single list everything else is built from. The
+instructions, the reply rule and the checking all read it. Adding
+a tool to the table updates all three at once; only its actual
+behaviour has to be written separately, in tools.ts.
+
+@ 10-13 | ToolSpec: how one tool is described
+A record with:
+- description: one sentence the model will read
+- args: the tool's arguments, each with a note on what goes in it
+(An argument is a value you hand to a tool, like the path of the
+file to read.)
+
+@ 15-35 | TOOLS: the table of seven tools
+Each line: the tool's name, then its arguments.
+- read_file: path
+- write_file: path, content (the whole file)
+- append_file: path, content (added to the end)
+- replace_in_file: path, find, replace (one exact piece)
+- search_files: pattern
+- run_shell: command
+- finish: summary
+
+Every argument is plain text. That keeps the format simple
+enough for a small model.
+
+append_file and replace_in_file were added later. Asked to add
+one line to a file, the model used write_file and wiped out
+everything else. These two let it change part of a file.
+
+@ 37-40 | ToolCall: a reply we have understood
+A record with:
+- tool: the name of one of the seven tools
+- args: that tool's arguments, each as text
+Made by parseReply. Used by loop.ts and tools.ts.
+
+@ 42-47 | REPLY_SCHEMA: the rule for a valid reply
+A rule, written in a standard form called JSON schema, saying:
+- the reply must be a record
+- it must have "tool", whose value is one of the seven names
+- it must have "args", which is itself a record
+We send this rule to the gateway with each question. Ollama then
+refuses to let the model write anything that breaks it.
+
+@ 49-60 | systemPrompt: write the instructions
+FUNCTION systemPrompt
+GOES IN:   nothing
+COMES OUT: the instructions, as one piece of text
+
+1. For each tool in TOOLS, write one line in the form
+   "- name(arguments): description".
+2. Put these parts together, one after another:
+   a. Who you are: a coding agent that acts only by calling
+      tools, one per reply.
+   b. How to behave: you will be shown each result; look at
+      files before changing them; call finish when done.
+   c. The list of tool lines from step 1.
+   d. The exact form a reply must take.
+   e. One worked example.
+
+It is kept short on purpose. These instructions are sent again
+with every single question, and the model's memory is small.
+
+@ 62-64 | firstJsonObject: find a record hidden in other text
+Sometimes the model wraps its reply in extra words, for example
+"Sure! {...} Hope that helps". This function digs the record out.
+
+FUNCTION firstJsonObject
+GOES IN:   some text
+COMES OUT: the first valid record found in it, or nothing
+
+1. Go through the text looking for each opening brace "{".
+   For each one, try the steps below.
+
+@ 65-76 | firstJsonObject: find where that record ends
+2. Walk forward from the opening brace one character at a time,
+   keeping count of how deep inside braces we are:
+   - an opening brace adds 1
+   - a closing brace takes 1 away
+   - when the count returns to 0, we have found the closing
+     brace that matches our opening one
+3. While walking, braces inside quotation marks do not count.
+   A file's content might well contain "}", and that must not be
+   mistaken for the end of the record. So we also keep track of
+   whether we are inside quotes, and of backslashes, which mean
+   "the next character is not special".
+
+@ 77-86 | firstJsonObject: check it really is valid
+4. Take the text from the opening brace to its matching closing
+   brace and try to read it as JSON.
+   - If that works, hand it back. Done.
+   - If not, forget this opening brace and move to the next one.
+5. If no opening brace led anywhere, hand back nothing.
+
+@ 88-89 | isObject: is this a record?
+A one-line check used in several places below.
+GOES IN:   any value
+COMES OUT: yes only if it is a record. Not a list, not text, not
+           a number, and not nothing.
+
+@ 91-94 | plainValue: undo one known mistake
+The model sometimes copies the form of the rule instead of giving
+a value. Asked for a path, it writes
+{"type": "string", "value": "README.md"} instead of "README.md".
+
+GOES IN:   a value
+COMES OUT: if it is a record with a "value" inside, that inner
+           value; otherwise the value unchanged
+
+@ 96-103 | parseReply, step 1: get a record out of the text
+FUNCTION parseReply
+GOES IN:   the model's reply (text)
+COMES OUT: one of two records:
+           - a tool call we are confident about
+           - an error message saying what was wrong
+RULE:      repair mistakes we have actually seen; never guess.
+
+1. Try reading the whole reply as JSON.
+2. If that fails, use firstJsonObject to dig a record out.
+3. If we still have no record, hand back the error "the reply
+   contained no JSON object".
+
+@ 105-108 | parseReply, step 2: which tool?
+4. Take the tool's name from "tool". If there is no "tool", look
+   under "name", a slip the model sometimes makes.
+5. If the name is missing, or is not one of the seven tools, hand
+   back an error that lists the real tool names.
+   The loop sends this message to the model, so the error also
+   serves as a reminder of what it can use.
+
+@ 110-112 | parseReply, step 3: where are the arguments?
+6. Look for the arguments under "args". If they are not there,
+   try "arguments", then "parameters".
+7. If none of those holds anything, look at the top level of the
+   reply instead. This covers a reply like
+   {"tool": "read_file", "path": "README.md"}.
+
+@ 113-119 | parseReply, step 4: collect exactly what the tool needs
+8. Start an empty set of arguments.
+9. For each argument TOOLS says this tool needs:
+   a. Take its value and pass it through plainValue.
+   b. If it is a number or a yes/no, turn it into text and keep it.
+   c. If it is text, keep it.
+   d. Anything else, including missing: hand back an error naming
+      the argument that is needed.
+Anything extra the model added is simply left behind.
+
+@ 120-120 | parseReply, step 5: done
+10. Hand back the tool call: the tool's name and its arguments.
+
+=== agent/context.ts
+--- detail
+GOAL
+Never send the model more than it can read.
+
+The model's memory, called its context window, holds 4,096
+tokens. (A token is a word-piece, roughly three characters of
+code.) Our research found that when a question is too long,
+Ollama throws away the BEGINNING without any warning. The
+beginning is where the instructions and the task are, so the
+model would forget what it was asked to do.
+
+So we measure every question ourselves and remove old steps
+before sending.
+
+THE PARTS WE NEED
+1. Message: the agreed form of one entry in the conversation.
+2. Four fixed numbers and one fixed sentence.
+3. estimateTokens: a function that guesses how big a text is.
+4. total: a function that adds that up for a conversation.
+5. fitMessages: the function that does the trimming.
+
+WHO USES WHOM
+- loop.ts runs fitMessages just before every question.
+- fitMessages uses total, which uses estimateTokens.
+- main.ts uses MAX_REPLY_TOKENS as the model's reply limit, so
+  the space we set aside for the reply here is really enough.
+
+WHAT WE RELY ON
+The conversation is always laid out the way loop.ts builds it:
+first the instructions, second the task, and after that pairs of
+(what the model said, what happened).
+
+@ 9-12 | Message: one entry in the conversation
+A record with:
+- role: who is speaking. "system" for instructions, "user" for
+  us, "assistant" for the model.
+- content: what was said, as text
+This is the form the gateway and Ollama expect.
+
+@ 14-17 | The numbers
+- CONTEXT_WINDOW_TOKENS is 4096: everything the model can hold.
+- MAX_REPLY_TOKENS is 400: space set aside for its answer.
+- PROMPT_BUDGET_TOKENS is 4096 minus 400 minus 300, so 3396:
+  the most a question may use. The extra 300 is a safety margin,
+  because our measuring is only an estimate.
+
+@ 19-19 | The note we leave behind
+OMITTED_NOTE is the sentence
+"[Earlier steps were removed to save space.]"
+When we remove old steps, we put this in their place so the
+model knows its history is incomplete.
+
+@ 21-24 | estimateTokens: roughly how big is this text?
+FUNCTION estimateTokens
+GOES IN:   some text
+COMES OUT: a number of tokens
+
+1. Count the characters, divide by 3, round up.
+
+We measured about 3.04 characters per token on code. Using 3
+makes the estimate slightly too high, which is the safe mistake.
+
+@ 26-27 | total: how big is a whole conversation?
+FUNCTION total (used only inside this file)
+GOES IN:   a list of messages
+COMES OUT: a number of tokens
+
+1. For each message: estimate its text, and add 4 for the
+   labels that surround every message.
+2. Add them all up.
+
+@ 34-39 | fitMessages, step 1: decide what may be removed
+FUNCTION fitMessages
+GOES IN:   the full conversation, and a budget (3396 unless told
+           otherwise)
+COMES OUT: a conversation small enough to send
+
+1. Set aside the first two messages, the instructions and the
+   task. These are never removed.
+2. Call everything after them "steps".
+3. Remember whether we have removed anything yet: not so far.
+4. Define how to put the result together:
+   - if nothing was removed: the first two, then the steps
+   - if something was removed: the first two, then the note,
+     then the remaining steps
+
+@ 41-44 | fitMessages, step 2: remove the oldest steps
+5. As long as the result is over budget, and more than one step
+   is left:
+   a. Remove the two oldest messages from the steps. A reply and
+      its result always leave together, so the model never sees
+      one without the other.
+   b. Remember that something was removed.
+
+The newest step is always kept. The model needs to see the
+result of what it just did.
+
+@ 45-52 | fitMessages, step 3: last resort
+It can still be too big if one single step is enormous, for
+example after reading a large file.
+
+6. As long as the result is still over budget:
+   a. Find the longest message after the first two.
+   b. If there is none, or it is already under 200 characters,
+      stop trying.
+   c. Cut it down to its first half and mark it "[cut to fit]".
+
+The task itself is never what gets cut.
+
+@ 53-53 | fitMessages, step 4: done
+7. Hand back the trimmed conversation.
+
+=== agent/tools.ts
+--- detail
+GOAL
+The model can only say "use this tool". This file is where the
+tool is actually used: files are read and written, and commands
+are run, inside the sandbox.
+
+Two promises:
+1. The file tools cannot reach outside the repository folder.
+2. Nothing here crashes. A failure is handed back as a message
+   starting with "ERROR:", because the reader is the model, and
+   it can often correct itself once told what went wrong.
+
+THE PARTS WE NEED
+1. ToolResult: the agreed form of what a tool hands back.
+2. Two limits: how long a result may be, and how long a command
+   may run.
+3. clip: shorten long text.
+4. insideRepo: the safety check on file paths.
+5. run: start a program and wait for it to end.
+6. runTool: the main function. It looks at which tool was asked
+   for and does the matching work.
+
+WHO USES WHOM
+- loop.ts runs runTool once per turn (through main.ts, which
+  fills in the repository folder). It also borrows clip.
+- runTool uses insideRepo for the file tools, run for searching
+  and for commands, and clip on nearly everything it hands back.
+- protocol.ts lists the tools. A tool listed there but not
+  handled here ends at "unknown tool".
+
+WHAT THIS CODE CREATES WHILE RUNNING
+- one ToolResult for every call
+- real files and folders in the repository
+
+@ 2-6 | Bring in what Node already provides
+Node is the program that runs our TypeScript. It comes with:
+- execFile: start another program
+- mkdir, readFile, writeFile: make a folder, read a file, write
+  a file
+- dirname, resolve, sep: work with file paths
+And from protocol.ts, the ToolCall form.
+
+@ 8-11 | ToolResult: what every tool hands back
+A record with:
+- ok: yes or no, did it work?
+- output: text for the model. The content it asked for, a short
+  confirmation, or a message starting with "ERROR:".
+
+@ 13-15 | Two limits
+- OUTPUT_LIMIT is 1500 characters, about 500 tokens. A result
+  stays in the conversation and is sent again on every later
+  turn, so long results quickly fill the model's memory.
+- SHELL_TIMEOUT_MS is 30 seconds, the longest a command may run.
+
+@ 17-19 | clip: shorten long text
+FUNCTION clip
+GOES IN:   some text, and a limit (1500 unless told otherwise)
+COMES OUT: text no longer than the limit, plus a note if cut
+
+1. If the text is within the limit, hand it back unchanged.
+2. Otherwise hand back the first part, followed by
+   "[cut: N characters in total]".
+   The total tells the model there is more it has not seen.
+
+@ 21-26 | insideRepo: is this path allowed?
+FUNCTION insideRepo
+GOES IN:   the repository folder, and a path the model asked for
+COMES OUT: the full, real path if it is allowed; nothing if not
+
+1. Work out the repository folder's full path. Call it root.
+2. Work out where the requested path really leads, starting
+   from root. This resolves any "../" (meaning "go up a folder").
+3. Allow it only if the result is root itself, or begins with
+   root followed by a slash.
+
+Example: "../../etc/passwd" leads outside root, so it is refused.
+The slash matters too: without it, a sibling folder called
+"repo-other" would look as if it were inside "repo".
+
+@ 28-35 | run: start a program and wait
+FUNCTION run (used only inside this file)
+GOES IN:   a program's name, its arguments, and a folder
+COMES OUT: a record with the exit code, what the program printed
+           (stdout), and its error messages (stderr)
+
+1. Start the program in that folder, with a 30-second limit and
+   a cap of 1 MB on how much it may print.
+2. When it ends, work out the exit code:
+   - 0 if it ended normally (0 always means success)
+   - the program's own code if it reported a failure
+   - 1 if it failed without giving one
+3. If we stopped it for taking too long, add
+   "[stopped after 30 s]" to the error messages.
+4. Hand back the record.
+
+run always hands something back, so the code that uses it does
+not need to prepare for it crashing.
+
+@ 37-39 | runTool: the main function
+FUNCTION runTool
+GOES IN:   a ToolCall (the tool's name and arguments), and the
+           repository folder
+COMES OUT: a ToolResult
+
+1. Take the tool's name and arguments out of the call.
+2. Do everything below inside a safety net (see the last part).
+
+@ 40-42 | The four file tools: check the path first
+3. If the tool is read_file, write_file, append_file or
+   replace_in_file:
+   a. Check the path with insideRepo.
+   b. If it is not allowed, hand back: not ok,
+      "ERROR: <path> is outside the repository".
+
+@ 43-43 | read_file
+   c. If the tool is read_file: read the file and hand back its
+      text, clipped.
+
+@ 44-48 | write_file
+   d. If the tool is write_file:
+      - make the folders leading to the file, if they are missing
+      - write the content as the entire file, replacing anything
+        that was there
+      - hand back: ok, "Wrote N characters to <path>"
+
+@ 49-49 | The two editing tools: read the file first
+   e. Otherwise it is append_file or replace_in_file. Both start
+      by reading the file as it is now. Call that text "before".
+      If the file does not exist, reading fails, and the safety
+      net at the end reports it.
+
+@ 50-56 | append_file
+   f. If the tool is append_file:
+      - if "before" does not already end with a line break (and
+        is not empty), put one in, so the new text starts on its
+        own line
+      - if the new text does not end with a line break, add one
+      - write: before, then the new text
+      - hand back: ok, "Added N characters to the end of <path>"
+
+@ 57-60 | replace_in_file: is the text there?
+   g. Otherwise the tool is replace_in_file:
+      - count how many times the "find" text appears in "before"
+      - if "find" is empty or appears zero times, hand back:
+        not ok, "ERROR: that text was not found ... Read the file
+        and copy the text exactly."
+        That advice is aimed at the model, which usually fails
+        here by misremembering the text.
+
+@ 61-63 | replace_in_file: change it
+      - write the file with the first appearance of "find"
+        swapped for the "replace" text
+      - hand back: ok, "Replaced the text in <path>", adding a
+        remark if the text appeared more than once, since only
+        the first was changed
+
+@ 65-70 | search_files
+4. If the tool is search_files:
+   a. Use run to start rg (ripgrep, a fast search program) in the
+      repository, asking for line numbers, at most 5 matches per
+      file, and long lines cut at 200 characters.
+   b. rg's exit code 1 means "nothing found". That is a normal
+      answer: hand back ok, "No matches."
+   c. Any other code except 0 is a real problem: hand back
+      not ok, with rg's error message.
+   d. Otherwise hand back ok, with what rg printed, clipped.
+
+@ 71-75 | run_shell
+5. If the tool is run_shell:
+   a. Use run to start sh (the standard command line on Linux)
+      with the model's command, in the repository folder.
+   b. Build the text: "exit code N", then what the command
+      printed, then its error messages, leaving out empty parts.
+   c. Hand back that text, clipped. ok is yes only if the exit
+      code is 0.
+
+This is the one tool not confined to the repository folder. A
+command can do anything the sandbox allows, which is exactly why
+the agent lives in a sandbox.
+
+@ 76-79 | Anything else, and the safety net
+6. If the tool's name matched none of the above, hand back:
+   not ok, "ERROR: unknown tool <name>".
+
+The safety net: if any step above failed unexpectedly (a file
+that is not there, no permission, and so on), catch it here and
+hand back: not ok, "ERROR: " and what went wrong.
