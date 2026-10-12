@@ -161,6 +161,17 @@ Conclusions:
 - CPU speed is adequate for a concept tester (decision 21 holds).
 - The harness cannot rely on Ollama's structured tool calls with this model. It needs its own lenient parser that finds a JSON tool call in the text and repairs common shape errors, plus the error-feedback loop already planned in decision 19. Prompting with an explicit example of the expected call format is worth testing.
 
+### 25. Step 1 as built: model service and gateway on Modal (2026-10-12)
+- **Model service** (`model-server/serve.py`, Modal app `agentdash-model`): Ollama plus the registry's models on 4 CPU cores and 4 GiB, shut down after 60 idle seconds, one machine at most. It has **no public address**; only code in the same Modal workspace can call it.
+- **Gateway** (`gateway/`, Modal app `agentdash-gateway`): the only public address, `https://c-mckeon--agentdash-gateway-web.modal.run`. Endpoints: `GET /health`, `GET /v1/models`, `GET /v1/usage`, `POST /v1/chat`. Callers ask for a tier, never a model name.
+- **Language:** Python, because it runs on Modal. This is a second exception to TypeScript-everywhere (after `model-server/`). The rules live in `gateway/core.py` with no Modal or web imports, so they can be moved into the control server later; only the thin wrapper in `main.py` would be rewritten. Whether the gateway moves is undecided.
+- **Auth:** one shared key, held in the Modal secret `agentdash-gateway` and in the git-ignored `.env`. To be replaced by short-lived per-run tokens at step 3.
+- **Ledger:** one JSON-lines file per month on the Modal volume `agentdash-ledger`, one line per call. Stands in for the database until step 3. A Modal Dict was rejected because its entries expire after a period of inactivity.
+- **Costing:** each call is charged for its own duration as seen by the gateway (so cold starts and queueing count) plus the billed idle time that preceded it (the gap since the previous call, capped at the 60-second idle window), at the registry's hardware rate. Not yet counted: the gateway's own small machine, and the final idle window after the last call of a month.
+- **Budget hard stop:** checked before every call, under a lock, in a single gateway container. Limit is **$0.50 per calendar month (UTC) for now**, set in `gateway/core.py`, because the account has only $1 of free credit. To be raised toward the €10 ceiling (decision 12) if a payment card is added.
+
+Verified live: answer with usage and cost returned; missing and wrong keys refused (401); invalid request refused (400); with the limit temporarily below the amount spent, the request was refused (402) and the model was not called; ledger persisted across redeploys. First call after idle took 8–10 s, about half of it waking the machine; warm calls with short replies took under 0.2 s. 19 unit tests cover `core.py`.
+
 ## Defaults (confirmed 2026-10-12)
 
 Chosen to keep v1 small.

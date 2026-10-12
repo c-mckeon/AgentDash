@@ -173,11 +173,11 @@
 
   <!-- ============ STEP 1 (current) ============ -->
   <details class="step" open>
-    <summary><span class="num">Step 1</span> Model endpoint and gateway <span class="chip current">In progress</span></summary>
+    <summary><span class="num">Step 1</span> Model service and gateway <span class="chip done">Done</span></summary>
     <div class="body">
 
       <h2>Architecture at this step</h2>
-      <p>So far one thing is built: a machine image on Modal containing Ollama and the Qwen model, proven by a one-off smoke test. Still to build in this step are a permanent model endpoint and the gateway in front of it.</p>
+      <p>Three things are built and running on Modal: a machine image containing Ollama and the Qwen model, a model service that starts a machine from that image whenever it is called, and the gateway, which is the only part with a public web address. A prompt sent to the gateway comes back with an answer, a cost, and the remaining budget.</p>
 
       <div class="scroll">
         <svg class="diagram" viewBox="0 0 900 480" role="img" aria-label="Architecture at step 1: a PC runs the smoke test script through the Modal tool; Modal holds a cached model image with Ollama and Qwen; a model endpoint and a gateway are still to be built; sandbox, API, dashboard, router and supervisor come in later steps.">
@@ -199,12 +199,12 @@
           <text class="t-muted" x="36" y="166">No model runs here.</text>
 
           <!-- Gateway -->
-          <rect class="box-todo" x="20" y="246" width="210" height="130" rx="8"/>
-          <text class="t-title" x="36" y="270">Gateway</text>
+          <rect class="box-built" x="20" y="246" width="210" height="130" rx="8"/>
+          <text class="t-title" x="36" y="270">Gateway (public address)</text>
           <text x="36" y="294">Model registry</text>
           <text x="36" y="314">Metering (tokens, CPU time)</text>
-          <text x="36" y="334">Budget hard stop (€10)</text>
-          <text class="t-muted" x="36" y="358">Where it runs: undecided</text>
+          <text x="36" y="334">Budget hard stop</text>
+          <text class="t-muted" x="36" y="358">Runs on Modal for now</text>
 
           <!-- Modal zone -->
           <rect class="zone" x="290" y="20" width="590" height="270" rx="12"/>
@@ -223,14 +223,14 @@
           <text class="t-muted" x="326" y="238">about 26 tokens per second.</text>
 
           <!-- Model endpoint -->
-          <rect class="box-todo" x="610" y="60" width="250" height="210" rx="8"/>
-          <text class="t-title" x="626" y="84">Model endpoint</text>
-          <text x="626" y="110">A fixed web address that</text>
-          <text x="626" y="130">answers model requests</text>
+          <rect class="box-built" x="610" y="60" width="250" height="210" rx="8"/>
+          <text class="t-title" x="626" y="84">Model service</text>
+          <text x="626" y="110">Answers model requests.</text>
+          <text x="626" y="130">No public address.</text>
           <text class="t-muted" x="626" y="160">Starts a machine from the</text>
-          <text class="t-muted" x="626" y="176">image when a request arrives.</text>
-          <text class="t-muted" x="626" y="206">Shuts down when idle, so it</text>
-          <text class="t-muted" x="626" y="222">costs nothing between runs.</text>
+          <text class="t-muted" x="626" y="176">image when the gateway calls.</text>
+          <text class="t-muted" x="626" y="206">Shuts down after 60 s idle, so</text>
+          <text class="t-muted" x="626" y="222">it costs nothing between runs.</text>
 
           <!-- PC -> image -->
           <path class="arrow" d="M230 110 L308 110" marker-end="url(#ah)"/>
@@ -281,9 +281,19 @@
         <tr><th>Piece</th><th>Status</th><th>What it is for</th></tr>
         <tr><td>Model image</td><td>Built</td><td>Ollama and the Qwen model packed into a reusable machine recipe, so a new machine does not download 986 MB every time it starts.</td></tr>
         <tr><td>Smoke test</td><td>Done</td><td>Proved the model runs at usable speed on CPU and showed how it formats tool calls.</td></tr>
-        <tr><td>Model endpoint</td><td>To build</td><td>Turns the one-off test into a service other parts can call at any time.</td></tr>
-        <tr><td>Gateway</td><td>To build</td><td>The single door every model request goes through. It counts usage, knows which models exist, and refuses requests once the month's €10 is spent. Built first because every later step spends money.</td></tr>
+        <tr><td>Model service</td><td>Built</td><td>Turns the one-off test into a service that can be called at any time. It has no public address; only the gateway can reach it.</td></tr>
+        <tr><td>Gateway</td><td>Built</td><td>The single door every model request goes through. It checks the caller's key, counts usage, knows which models exist, and refuses requests once the month's budget is spent. Built first because every later step spends money.</td></tr>
       </table>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li>A prompt sent through the gateway returned an answer, with token counts, seconds and cost attached.</li>
+        <li>First call after idle: about 8 to 10 seconds, half of it waking the machine. Calls while it is awake: well under a second for a short reply.</li>
+        <li>Requests with no key or a wrong key were refused.</li>
+        <li>With the budget limit temporarily set below what had been spent, the gateway refused the request without waking the model. The limit was then restored.</li>
+        <li>The ledger survived redeploys: five calls recorded, about a quarter of a cent in total.</li>
+      </ul>
+      <p class="note">The budget limit is set to $0.50 for now, not €10, because the Modal account has only $1 of free credit. The gateway's own small machine is not yet counted in the ledger, so Modal's bill will be slightly higher than the ledger says.</p>
 
       <h2>What the gateway is</h2>
       <p>A small program of ours that sits between anything that wants to use a model and the model itself. Every model request goes through it; nothing talks to the model directly.</p>
@@ -332,8 +342,14 @@ supervisor         ─┘</pre>
         <dt>What did the smoke test prove?</dt>
         <dd>That a 1.5B model on 4 CPU cores writes about 26 tokens per second and loads in 3.5 seconds, which is fast enough to continue. It also showed the model picks the right tool but writes the call in the wrong shape, so our harness will need a forgiving parser.</dd>
 
+        <dt>Why do we need a model service as well as the gateway?</dt>
+        <dd>The smoke test started a machine, asked two questions and shut it down, and only that one script could talk to the model. The gateway needs something it can forward to at any moment. The model service is the same image wrapped so that it wakes when called and sleeps when idle. They are separate machines on purpose: the gateway is tiny and cheap, so checking a key or refusing an over-budget request never wakes the expensive 4-core machine.</dd>
+
+        <dt>Could the gateway move into the control dashboard later?</dt>
+        <dd>Yes. Its rules (registry, pricing, budget, request checks) are in one file with no ties to Modal, so they can be lifted into another server. Only the thin web wrapper would be rewritten.</dd>
+
         <dt>Still open</dt>
-        <dd>Where the gateway runs while we develop it, given nothing should run on the PC. Whether to add a payment card to Modal, since only $1 of credit is available without one.</dd>
+        <dd>Whether to add a payment card to Modal, since only $1 of credit is available without one. The gateway is written in Python because it runs on Modal, which is an exception to the plan of TypeScript everywhere.</dd>
       </dl>
 
       <h2>Project folder at this step</h2>
@@ -344,10 +360,18 @@ supervisor         ─┘</pre>
 │   └── workflows/
 │       └── pages.yml
 ├── .gitignore
+├── .env
 ├── DESIGN.md
+├── gateway/
+│   ├── core.py
+│   ├── main.py
+│   └── try_it.py
 ├── model-server/
+│   ├── serve.py
 │   ├── smoke_test.py
 │   └── __pycache__/
+├── tests/
+│   └── test_gateway_core.py
 └── web/
     ├── index.html
     └── architecture.html</pre>
@@ -366,9 +390,44 @@ supervisor         ─┘</pre>
             <td>Will be called by the gateway. Runs on Modal, never on the PC.</td>
           </tr>
           <tr>
+            <td><code>model-server/serve.py</code></td>
+            <td>The model service. Describes the image (Ollama plus Qwen) and the machine (4 CPU cores, 4 GiB, shut down after 60 idle seconds), and offers one operation: answer a chat request.</td>
+            <td>Deployed to Modal as the app <code>agentdash-model</code>. Called only by <code>gateway/main.py</code>. Its hardware numbers must match the registry in <code>gateway/core.py</code>, because the gateway prices calls from them.</td>
+          </tr>
+          <tr>
             <td><code>model-server/smoke_test.py</code></td>
-            <td>Describes the model image (Ollama plus Qwen), then runs two test prompts on a 4-core machine and prints the timings.</td>
-            <td>Sent to Modal by <code>py -m modal run model-server/smoke_test.py</code>. The image it defines will be reused by the real endpoint.</td>
+            <td>The original one-off test: runs two prompts on a 4-core machine and prints the timings.</td>
+            <td>Kept for re-measuring speed. Not used by anything else.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/</code></td>
+            <td>The gateway: the one public door to the models.</td>
+            <td>Sits between every caller and <code>model-server/</code>.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/core.py</code></td>
+            <td>The gateway's rules: the model registry, Modal's prices, the monthly budget limit, how a call is costed (call time plus the idle time before it), and what a valid request looks like.</td>
+            <td>Plain Python with no cloud code in it, so it can be tested on its own and moved to another server later. Used by <code>main.py</code> and checked by <code>tests/</code>.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/main.py</code></td>
+            <td>The web wrapper: receives requests, checks the key, asks <code>core.py</code> whether the budget allows the call, forwards it to the model service, and writes one ledger line.</td>
+            <td>Deployed to Modal as the app <code>agentdash-gateway</code>. Reads its key from a Modal secret and keeps the ledger on a Modal volume.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/try_it.py</code></td>
+            <td>A small helper for sending one prompt through the gateway, or printing the month's usage.</td>
+            <td>Runs on the PC. Reads the gateway's address and key from <code>.env</code>.</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_gateway_core.py</code></td>
+            <td>19 automatic checks of the rules in <code>core.py</code>: pricing, budget, idle time, ledger totals and request checking.</td>
+            <td>Needs no model and no internet. Run with <code>py -m unittest discover -s tests</code>.</td>
+          </tr>
+          <tr>
+            <td><code>.env</code></td>
+            <td>The gateway's address and its secret key, for use from the PC.</td>
+            <td>Listed in <code>.gitignore</code>, so it never reaches GitHub. The same key is stored on Modal as a secret.</td>
           </tr>
           <tr>
             <td><code>model-server/__pycache__/</code></td>
@@ -425,7 +484,17 @@ supervisor         ─┘</pre>
           <tr>
             <td>Modal</td>
             <td>Workspace <code>c-mckeon</code></td>
-            <td>Holds the cached model image and the record of the smoke test run. Nothing is deployed or running.</td>
+            <td>Holds the cached model image and two deployed apps: <code>agentdash-model</code> and <code>agentdash-gateway</code>. Deployed means ready to start on demand; no machine runs while nobody is calling.</td>
+          </tr>
+          <tr>
+            <td>Modal</td>
+            <td>Secret <code>agentdash-gateway</code></td>
+            <td>The gateway's key, handed to the gateway's machine when it starts.</td>
+          </tr>
+          <tr>
+            <td>Modal</td>
+            <td>Volume <code>agentdash-ledger</code></td>
+            <td>A small disk holding one ledger file per month, one line per model call. It stands in for the database until step 3.</td>
           </tr>
           <tr>
             <td>GitHub</td>
@@ -446,15 +515,26 @@ supervisor         ─┘</pre>
       </div>
 
       <h2>How the pieces connect</h2>
-<pre>smoke_test.py ──(Modal tool, using the token)──► Modal
-                                                  │
-                    Docker Hub: ollama/ollama ────┤  build once, then cached
-                    Ollama library: Qwen file ────┘
-                                                  │
-                                                  ▼
-                                     machine: Ollama ⇄ Qwen
-                                                  │
-                          timings and replies ◄───┘  machine shuts down</pre>
+<p>Setting it up (once per change):</p>
+<pre>serve.py, main.py ──(Modal tool, using the token)──► Modal
+                                                      │
+                        Docker Hub: ollama/ollama ────┤  build once, then cached
+                        Ollama library: Qwen file ────┘</pre>
+<p>Using it (every model call):</p>
+<pre>caller with the key (today: try_it.py on the PC)
+        │  prompt
+        ▼
+   GATEWAY  ── wrong key? ─────────────► refused
+        │   ── budget spent? ──────────► refused, model never wakes
+        │  forwards
+        ▼
+   MODEL SERVICE: Ollama ⇄ Qwen   (wakes if asleep, sleeps after 60 s idle)
+        │  answer + timings
+        ▼
+   GATEWAY  ── writes one line to the ledger volume
+        │  answer + cost + remaining budget
+        ▼
+     caller</pre>
     </div>
   </details>
 
