@@ -202,6 +202,18 @@ Full write-up: `web/research.html`. Raw data: `research/results/2026-10-12.jsonl
 - **Verified live:** normal run done in about 7 s with 13 events and $0.0003 of sandbox time; missing repository → `failed` with the sandbox destroyed; kill → `killed` with the sandbox destroyed; pass accepted from inside the sandbox; expired, altered and wrongly signed passes refused. The model was not woken.
 - **Not yet done:** one-run-at-a-time is not enforced; sandbox cost is on the run record but not in the gateway ledger.
 
+### 29. Step 4 as built: the harness (2026-10-12)
+The owner chose to build on the current small model and measure, rather than add a larger model first.
+- **`agent/`**, zero dependencies, runs inside the sandbox under Node's type stripping: `protocol.ts` (tools, system prompt, tolerant reply reader), `context.ts` (token estimate at 3 characters per token, trimming to a 3,396-token prompt budget, instructions and task always kept), `tools.ts` (`read_file`, `write_file`, `search_files`, `run_shell`; paths confined to the repository; output cut to 1,500 characters), `loop.ts` (the loop and its stopping rules), `main.ts` (entry point).
+- **Protocol:** tools described in our own system prompt; replies forced to `{"tool", "args"}` by JSON schema through the gateway's `response_format`; temperature 0; 400 output tokens per step. A fifth tool, `finish`, ends the run.
+- **Stopping rules:** `finish`; 8 steps (`AGENT_MAX_STEPS`); the identical call three times running ("stuck"); three unreadable replies running; gateway 402 (run ends as `budget_stopped`); 300-second timeout (`AGENT_TIMEOUT_SECONDS`).
+- **Delivery and events:** the orchestrator copies `agent/*.ts` into `/agent` in the sandbox at the start of each run and starts it with the run's pass in its environment. The agent prints one JSON line per event; the provider's `exec` gained `onStdoutLine`, `env` and `writeFile`, and the orchestrator stores each line as an `agent_*` event as it arrives.
+- **Kill:** watched once a second while the agent works; the patch so far is saved before the sandbox is destroyed.
+- **Run status:** `done` only if the agent called `finish`; any other stop reason ends the run as `failed` with the reason, and the patch is kept either way. `done` therefore means "the agent says it is done" until the supervisor's review exists (step 7).
+- **Tests:** the loop is exercised with scripted replies in `tests/agent.test.ts`. These are test doubles for unit-testing the loop's rules, not a fake provider in the product (decision 20 stands).
+- **Verified live, 3 tasks:** 9 of 9 replies were valid tool calls. One task correct; one overwrote a file it was asked to append to and was stopped as stuck; one was marked done although its script printed the wrong output. Runs took 15–26 s; about $0.008 model time and $0.003 sandbox time in total. A run killed mid-way ended as `killed` within a second.
+- **Suggested by the results, not yet done:** an append/replace edit tool; the supervisor's result review.
+
 ## Defaults (confirmed 2026-10-12)
 
 Chosen to keep v1 small.

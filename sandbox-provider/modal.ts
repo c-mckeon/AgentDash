@@ -72,9 +72,24 @@ class ModalSandboxHandle implements Sandbox {
       mode: "text",
       workdir: options.workdir,
       timeoutMs: timeoutSeconds * 1000,
+      env: options.env,
     });
+    const readStdout = async (): Promise<string> => {
+      if (!options.onStdoutLine) return process.stdout.readText();
+      let all = "";
+      let pending = "";
+      for await (const chunk of process.stdout) {
+        all += chunk;
+        pending += chunk;
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+        for (const line of lines) options.onStdoutLine(line);
+      }
+      if (pending) options.onStdoutLine(pending);
+      return all;
+    };
     const [stdout, stderr, exitCode] = await Promise.allSettled([
-      process.stdout.readText(),
+      readStdout(),
       process.stderr.readText(),
       process.wait(),
     ]);
@@ -102,6 +117,10 @@ class ModalSandboxHandle implements Sandbox {
       seconds,
       timedOut: killedAtDeadline,
     };
+  }
+
+  async writeFile(path: string, content: string): Promise<void> {
+    await this.#sandbox.filesystem.writeText(content, path);
   }
 
   async destroy(): Promise<DestroyReport> {

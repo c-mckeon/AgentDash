@@ -1,9 +1,10 @@
 /**
- * Live check of the skeleton: start the API, start one real run through it,
- * watch it finish, and check the gateway's handling of run passes.
- * Uses one sandbox for a few seconds and never wakes the model.
+ * Live check: start the API, send real runs through it, and print what
+ * happened. Each run uses a sandbox and wakes the model, so the whole check
+ * costs a cent or two.
  *
- *   node orchestrator/try-it.ts
+ *   node orchestrator/try-it.ts              the default tasks below
+ *   node orchestrator/try-it.ts "<task>"     one task of your own
  */
 import type { AddressInfo } from "node:net";
 
@@ -13,7 +14,13 @@ import { Db } from "../db/index.ts";
 import { ModalSandboxProvider } from "../sandbox-provider/modal.ts";
 import { executeRun } from "./run.ts";
 import { isTerminal } from "./state.ts";
-import { signRunToken } from "./tokens.ts";
+
+const REPO = "https://github.com/octocat/Hello-World";
+const DEFAULT_TASKS = [
+  "Create a file named HELLO.md containing exactly this text: Hello from AgentDash.",
+  "Add this line to the end of the file named README: Edited by an agent.",
+  "Create a file named count.sh that prints the numbers 1 to 3, one per line, then run it with sh to check it works.",
+];
 
 process.loadEnvFile(".env");
 const config = loadConfig();
@@ -28,8 +35,9 @@ await new Promise<void>((resolve) => api.listen(0, resolve));
 const base = `http://localhost:${(api.address() as AddressInfo).port}`;
 const owner = { authorization: `Bearer ${config.ownerToken}`, "content-type": "application/json" };
 
-async function runToEnd(body: object, killAfterMs?: number) {
-  const created = await fetch(`${base}/runs`, { method: "POST", headers: owner, body: JSON.stringify(body) });
+async function runToEnd(task: string, killAfterMs?: number) {
+  const started = Date.now();
+  const created = await fetch(`${base}/runs`, { method: "POST", headers: owner, body: JSON.stringify({ task, repoUrl: REPO }) });
   const { run } = (await created.json()) as { run: { id: string } };
   if (killAfterMs !== undefined) {
     await new Promise((resolve) => setTimeout(resolve, killAfterMs));
@@ -37,48 +45,39 @@ async function runToEnd(body: object, killAfterMs?: number) {
   }
   for (;;) {
     const state = (await (await fetch(`${base}/runs/${run.id}`)).json()) as { run: any };
-    // The sandbox report is written just after the final status, so wait for it.
-    if (isTerminal(state.run.status) && (state.run.sandboxSeconds !== null || state.run.status === "killed")) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const final = (await (await fetch(`${base}/runs/${run.id}`)).json()) as { run: any };
+    if (isTerminal(state.run.status) && state.run.sandboxSeconds !== null) {
       const { events } = (await (await fetch(`${base}/runs/${run.id}/events`)).json()) as { events: any[] };
+      const model = events.filter((event) => event.type === "agent_model").map((event) => event.data.usage ?? {});
+      const sum = (key: string) => Number(model.reduce((total, usage) => total + (usage[key] ?? 0), 0).toFixed(4));
       return {
-        status: final.run.status,
-        error: final.run.error,
-        patchBytes: final.run.patch?.length ?? null,
-        sandboxSeconds: final.run.sandboxSeconds,
-        sandboxCostUsd: final.run.sandboxCostUsd,
-        events: events.map((event) => `${event.type} ${JSON.stringify(event.data)}`.slice(0, 160)),
+        task,
+        status: state.run.status,
+        error: state.run.error,
+        wallSeconds: (Date.now() - started) / 1000,
+        sandboxSeconds: state.run.sandboxSeconds,
+        sandboxCostUsd: state.run.sandboxCostUsd,
+        modelCalls: model.length,
+        modelSeconds: sum("model_seconds"),
+        promptTokens: sum("prompt_tokens"),
+        outputTokens: sum("output_tokens"),
+        modelCostUsd: sum("cost_usd"),
+        parseErrors: events.filter((event) => event.type === "agent_parse_error").length,
+        steps: events
+          .filter((event) => ["agent_tool_call", "agent_tool_result", "agent_parse_error", "agent_finished", "agent_output"].includes(event.type))
+          .map((event) => `${event.type.replace("agent_", "")} ${JSON.stringify(event.data)}`.slice(0, 260)),
+        patch: state.run.patch,
       };
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
-async function gatewayStatus(token: string): Promise<number> {
-  const response = await fetch(`${config.gatewayUrl}/v1/chat`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: "{}", // invalid on purpose: a valid pass gets 400 and the model is never called
-  });
-  return response.status;
-}
+const custom = process.argv[2];
+const results = [];
+for (const task of custom ? [custom] : DEFAULT_TASKS) results.push(await runToEnd(task));
+if (!custom) results.push({ killed: await runToEnd(DEFAULT_TASKS[2], 6000) });
 
-const now = Math.floor(Date.now() / 1000);
-const good = signRunToken(config.gatewayKey, "run_check", now + 60);
-const report = {
-  normalRun: await runToEnd({ task: "No agent yet", repoUrl: "https://github.com/octocat/Hello-World" }),
-  missingRepo: await runToEnd({ task: "x", repoUrl: "https://github.com/octocat/this-repo-does-not-exist-9f3a" }),
-  killedRun: await runToEnd({ task: "x", repoUrl: "https://github.com/octocat/Hello-World" }, 300),
-  gatewayPasses: {
-    valid: await gatewayStatus(good),
-    expired: await gatewayStatus(signRunToken(config.gatewayKey, "run_check", now - 1)),
-    tampered: await gatewayStatus(good.replace("run_check", "run_other")),
-    wrongKey: await gatewayStatus(signRunToken("not-the-key", "run_check", now + 60)),
-  },
-};
-
-console.log(JSON.stringify(report, null, 2));
+console.log(JSON.stringify(results, null, 2));
 api.close();
 db.close();
 sandboxes.close();

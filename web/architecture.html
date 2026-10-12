@@ -14,7 +14,7 @@
 
   <div class="latest">
     <p class="when">Latest milestone · 12 October 2026</p>
-    <p><strong>Step 3 is done: a run now exists as a thing the system tracks from start to finish.</strong> Asking the API to start a run creates a record, moves it through its stages, creates a sandbox, clones the repository, captures the patch, destroys the sandbox, and writes every one of those moments to an event log. A whole run with no agent in it takes about 7 seconds and costs three hundredths of a cent. The agent itself is the next step; until then, that stage is skipped and the log says so. Earlier today, <a href="research.html">research</a> found and fixed a large gap in our cost tracking.</p>
+    <p><strong>Step 4 is done: an AI agent now does real work inside a sandbox.</strong> Given a task in plain words and a repository, the system starts a sandbox, puts the agent in it, and the agent asks the model what to do, reads and writes files, runs commands, and hands back a patch, with every step recorded. Three first tasks were run: one was done correctly, one got stuck and was stopped automatically, and one was reported as done when it was wrong. That last result is the clearest argument so far for the supervisor planned in step 7. Details are on the <a href="research.html">Research</a> tab.</p>
   </div>
 
   <!-- ============ STEP 0 ============ -->
@@ -633,7 +633,7 @@ sandbox-provider/modal.ts ──(Modal library, login token)──► Modal
     </div>
   </details>
 
-  <details class="step" open>
+  <details class="step">
     <summary><span class="num">Step 3</span> Skeleton: API, database, orchestrator <span class="chip done">Done</span></summary>
     <div class="body">
 
@@ -823,12 +823,149 @@ anyone ── GET /runs/:id/events ───────────────
     </div>
   </details>
 
-  <details class="step">
-    <summary><span class="num">Step 4</span> Harness <span class="chip">Planned</span></summary>
+  <details class="step" open>
+    <summary><span class="num">Step 4</span> Harness (the agent) <span class="chip done">Done</span></summary>
     <div class="body">
-      <h2>What this step will add</h2>
-      <p>The agent itself, in <code>agent/</code>: the loop and four tools (read file, write or edit file, search files, run shell command), running inside the sandbox and calling the model through the gateway. Includes the forgiving tool-call parser the smoke test showed we need. Output is a patch from a cloned public repository.</p>
-      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+
+      <h2>Architecture at this step</h2>
+      <p>The harness is the program that turns a model into an agent: it runs the model in a loop and carries out what the model asks for. It lives in <code>agent/</code>, is copied into each run's sandbox, and runs there. It reaches the model only through the gateway, using the run's pass, and reports back by printing one line per event, which the orchestrator reads and stores as it arrives.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 380" role="img" aria-label="Architecture at step 4: the orchestrator copies the agent into the sandbox and starts it; inside the sandbox the agent loop asks the model for a tool call through the gateway, carries it out on the repository, and repeats; each step is printed as an event that the orchestrator stores in the database.">
+          <defs>
+            <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <rect class="zone" x="20" y="20" width="230" height="340" rx="12"/>
+          <text class="t-title" x="36" y="44">Our server</text>
+          <rect class="box-built" x="40" y="60" width="190" height="110" rx="8"/>
+          <text class="t-title" x="54" y="84">Orchestrator</text>
+          <text class="t-muted" x="54" y="106">copies the agent in,</text>
+          <text class="t-muted" x="54" y="124">starts it, watches for kill,</text>
+          <text class="t-muted" x="54" y="142">collects the patch</text>
+          <rect class="box-built" x="40" y="230" width="190" height="110" rx="8"/>
+          <text class="t-title" x="54" y="254">Database</text>
+          <text class="t-muted" x="54" y="276">event log now includes</text>
+          <text class="t-muted" x="54" y="294">every model reply, tool</text>
+          <text class="t-muted" x="54" y="312">call and tool result</text>
+
+          <rect class="zone" x="290" y="20" width="590" height="340" rx="12"/>
+          <text class="t-title" x="306" y="44">Modal cloud</text>
+
+          <rect class="box-built" x="310" y="60" width="330" height="280" rx="8"/>
+          <text class="t-title" x="326" y="84">Sandbox</text>
+
+          <rect class="box-todo" x="330" y="100" width="290" height="130" rx="8"/>
+          <text class="t-title" x="344" y="124">Agent (the harness)</text>
+          <text x="344" y="148">1. ask the model for a tool call</text>
+          <text x="344" y="168">2. carry it out</text>
+          <text x="344" y="188">3. show the model the result</text>
+          <text class="t-muted" x="344" y="212">repeat, up to 8 times, until "finish"</text>
+
+          <rect class="box-built" x="330" y="256" width="290" height="64" rx="8"/>
+          <text class="t-title" x="344" y="280">The repository</text>
+          <text class="t-muted" x="344" y="302">files are read, written, searched, run</text>
+
+          <rect class="box-built" x="690" y="100" width="170" height="60" rx="8"/>
+          <text class="t-title" x="704" y="124">Gateway</text>
+          <text class="t-muted" x="704" y="144">checks the run's pass</text>
+          <rect class="box-built" x="690" y="200" width="170" height="60" rx="8"/>
+          <text class="t-title" x="704" y="224">Model service</text>
+          <text class="t-muted" x="704" y="244">Qwen 1.5B</text>
+
+          <path class="arrow" d="M230 100 L328 120" marker-end="url(#ah4)"/>
+          <text class="t-muted" x="246" y="96">start</text>
+          <path class="arrow" d="M330 190 L232 260" marker-end="url(#ah4)"/>
+          <text class="t-muted" x="240" y="212">events</text>
+          <path class="arrow" d="M620 130 L688 130" marker-end="url(#ah4)"/>
+          <path class="arrow" d="M775 160 L775 198" marker-end="url(#ah4)"/>
+          <path class="arrow" d="M475 230 L475 254" marker-end="url(#ah4)"/>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built in earlier steps</span>
+        <span class="l-todo">Added in this step</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Piece</th><th>What it is for</th></tr>
+          <tr><td>The loop</td><td>Asks the model for one tool call, carries it out, shows the model the result, and repeats. It stops when the model calls "finish", after 8 steps, when the same call is made three times running (stuck), after three unreadable replies, or when the gateway says the budget is spent.</td></tr>
+          <tr><td>Five tools</td><td>Read a file, write a file, search files, run a shell command, and finish. File tools cannot reach outside the repository. Results are cut to 1,500 characters so they fit the model's small window.</td></tr>
+          <tr><td>The protocol</td><td>The instructions that tell the model which tools exist and how to reply, plus a tolerant reader for the replies. Built the way the research recommended: our own instructions, with the reply's shape forced.</td></tr>
+          <tr><td>Context keeper</td><td>Counts how much text is being sent and drops the oldest steps before the model's 4,096-token limit is reached, always keeping the instructions and the task. The research showed the model would otherwise lose them silently.</td></tr>
+          <tr><td>Live events</td><td>The orchestrator now reads the agent's output line by line as it happens, so the dashboard will be able to show a run in progress.</td></tr>
+          <tr><td>Kill during work</td><td>A kill request no longer waits for the current stage: the orchestrator notices within a second, saves the patch so far and destroys the sandbox.</td></tr>
+        </table>
+      </div>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li>Three real tasks ran from "start a run" to a stored patch, in 15 to 26 seconds each.</li>
+        <li>All 9 model replies were valid tool calls. No repairs were needed.</li>
+        <li>One task was completed correctly. One got stuck repeating itself and was stopped by the loop. One was marked done although the result was wrong.</li>
+        <li>A run killed 6 seconds in ended as "killed" within a second, with its sandbox destroyed.</li>
+        <li>Each model call was recorded in the gateway's ledger against its run, as the worker role, using the run's pass.</li>
+      </ul>
+      <p class="note">The results are written up as finding 6 on the <a href="research.html">Research</a> tab.</p>
+
+      <h2>Questions this version raises</h2>
+      <dl class="qa">
+        <dt>Where is the "intelligence": in the harness or the model?</dt>
+        <dd>In the model. The harness has no opinions about code. It is plumbing with safety rails: it passes messages, runs tools, keeps count, and decides when to stop. Swap in a stronger model and the same harness produces better work.</dd>
+
+        <dt>A run said "done" but the result was wrong. Is that a bug?</dt>
+        <dd>Not in the harness: it reported faithfully that the agent called "finish". The gap is that nobody checks the agent's claim. That is the supervisor's review, step 7. Until then, "done" means "the agent says it is done".</dd>
+
+        <dt>Why did a simple "add a line to a file" fail?</dt>
+        <dd>The only way to change a file is to write the whole file, and the model wrote just the new line without reading the old content first. A tool for appending or replacing part of a file would avoid that. It has not been added yet; the measurement came first.</dd>
+
+        <dt>Why copy the agent into the sandbox on every run?</dt>
+        <dd>It is five small files and takes a moment. The alternative, baking it into the sandbox image, would mean rebuilding the image every time the agent's code changes.</dd>
+
+        <dt>Still open</dt>
+        <dd>Whether to add an edit tool now or wait for a larger model. How often this model succeeds on a wider set of tasks; three is too few to say.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">New or changed since step 3 (12 October 2026).</p>
+<pre>AgentDash/
+├── agent/
+│   ├── protocol.ts                    new
+│   ├── context.ts                     new
+│   ├── tools.ts                       new
+│   ├── loop.ts                        new
+│   └── main.ts                        new
+├── orchestrator/run.ts, try-it.ts     changed (installs and runs the agent)
+├── sandbox-provider/types.ts, modal.ts  changed (write a file, live output, per-command settings)
+├── config.ts                          changed (step and time limits for the agent)
+└── tests/agent.test.ts                new</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr><td><code>agent/protocol.ts</code></td><td>The list of tools, the instructions for the model, and the reader that turns a reply into a tool call.</td><td>Used by the loop. Shaped by research findings 2 and 4.</td></tr>
+          <tr><td><code>agent/context.ts</code></td><td>Estimates token counts and trims old steps to fit the window.</td><td>Used by the loop before every model call. Shaped by research finding 3.</td></tr>
+          <tr><td><code>agent/tools.ts</code></td><td>What each tool really does on the sandbox's files.</td><td>Uses plain file operations, ripgrep for search and <code>sh</code> for commands, all installed by <code>sandbox/image.ts</code>.</td></tr>
+          <tr><td><code>agent/loop.ts</code></td><td>The loop and its stopping rules.</td><td>Knows nothing about the network or files; those are handed to it, which is what lets it be tested without a model.</td></tr>
+          <tr><td><code>agent/main.ts</code></td><td>The starting point inside the sandbox: reads the task and the pass, connects the loop to the gateway and the tools, prints events.</td><td>Started by <code>orchestrator/run.ts</code>. Calls the gateway's <code>/v1/chat</code>.</td></tr>
+          <tr><td><code>tests/agent.test.ts</code></td><td>20 automatic checks, including every odd reply shape the model produced in research.</td><td>No cloud needed. The loop is exercised with scripted replies.</td></tr>
+        </table>
+      </div>
+
+      <h2>How one step of the agent flows</h2>
+<pre>AGENT (in the sandbox)
+   │ trims the conversation to fit 4,096 tokens
+   │ sends it with the run's pass ───────────────► GATEWAY ──► MODEL
+   │                                                  │ budget check, ledger line
+   │ ◄── {"tool": "write_file", "args": {...}} ◄──────┘
+   │ reads the reply; if unreadable, tells the model and tries again
+   │ carries out the tool on the repository
+   │ prints an event line ──► ORCHESTRATOR ──► DATABASE (event log)
+   └ adds the result to the conversation and goes round again</pre>
     </div>
   </details>
 

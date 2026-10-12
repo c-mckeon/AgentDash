@@ -22,6 +22,8 @@ export interface Sandbox {
   readonly id: string;
   readonly size: SandboxSize;
   exec(command: string[], options?: ExecOptions): Promise<ExecResult>;
+  /** Create or overwrite a text file. The directory must already exist. */
+  writeFile(path: string, content: string): Promise<void>;
   /** Stop the sandbox and report how long it lived and roughly what it cost. */
   destroy(): Promise<DestroyReport>;
 }
@@ -30,6 +32,10 @@ export interface ExecOptions {
   /** Directory to run in. Defaults to the sandbox's working directory. */
   workdir?: string;
   timeoutSeconds?: number;
+  /** Extra environment variables for this command only. */
+  env?: Record<string, string>;
+  /** Called with each complete line of output as it arrives, for live progress. */
+  onStdoutLine?: (line: string) => void;
 }
 
 export interface ExecResult {

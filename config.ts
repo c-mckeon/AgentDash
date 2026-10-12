@@ -12,6 +12,10 @@ export interface Config {
   runTokenTtlSeconds: number;
   /** Modal destroys a run's sandbox after this long even if we never do. */
   sandboxMaxLifetimeSeconds: number;
+  /** The agent is stopped after this many model calls. */
+  agentMaxSteps: number;
+  /** The agent is stopped after this long, whatever it is doing. */
+  agentTimeoutSeconds: number;
 }
 
 const REQUIRED = ["GATEWAY_URL", "GATEWAY_KEY", "OWNER_TOKEN"] as const;
@@ -27,5 +31,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     port: Number(env.PORT ?? 8787),
     runTokenTtlSeconds: Number(env.RUN_TOKEN_TTL_SECONDS ?? 900),
     sandboxMaxLifetimeSeconds: Number(env.SANDBOX_MAX_LIFETIME_SECONDS ?? 600),
+    agentMaxSteps: Number(env.AGENT_MAX_STEPS ?? 8),
+    agentTimeoutSeconds: Number(env.AGENT_TIMEOUT_SECONDS ?? 300),
   };
 }

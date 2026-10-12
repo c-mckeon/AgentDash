@@ -1,11 +1,13 @@
 /**
- * Coordinates one run from start to finish.
+ * Coordinates one run from start to finish: lifecycle, sandbox, clone, agent,
+ * patch capture, kill switch, and the record of what the sandbox cost.
  *
- * At this step there is no agent, router or supervisor yet, so those stages
- * are passed through and say so in the event log. What is real: the lifecycle,
- * the sandbox, the clone, the patch capture, the kill switch, the per-run
- * gateway pass, and the record of what the sandbox cost.
+ * The router and supervisor are not built yet (steps 6 and 7), so those
+ * stages are passed through and say so in the event log.
  */
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+
 import type { Config } from "../config.ts";
 import type { Db } from "../db/index.ts";
 import type { Sandbox, SandboxProvider } from "../sandbox-provider/types.ts";
@@ -13,6 +15,9 @@ import type { RunStatus } from "./state.ts";
 import { signRunToken } from "./tokens.ts";
 
 const REPO_DIR = "/workspace/repo";
+const AGENT_DIR = "/agent";
+const AGENT_SOURCE = join(import.meta.dirname, "..", "agent");
+const KILL_POLL_MS = 1000;
 
 export interface RunDeps {
   db: Db;
@@ -20,8 +25,20 @@ export interface RunDeps {
   config: Config;
 }
 
-/** Thrown between stages when the owner has asked for the run to stop. */
+/** Thrown when the owner has asked for the run to stop. */
 class Killed extends Error {}
+/** Thrown when the gateway refused the agent because the month's budget is spent. */
+class BudgetStopped extends Error {}
+
+/** Copies the agent's source files into the sandbox. */
+async function installAgent(sandbox: Sandbox): Promise<number> {
+  await sandbox.exec(["mkdir", "-p", AGENT_DIR]);
+  const files = (await readdir(AGENT_SOURCE)).filter((name) => name.endsWith(".ts"));
+  for (const name of files) {
+    await sandbox.writeFile(`${AGENT_DIR}/${name}`, await readFile(join(AGENT_SOURCE, name), "utf8"));
+  }
+  return files.length;
+}
 
 export async function executeRun(deps: RunDeps, runId: string): Promise<void> {
   const { db, sandboxes, config } = deps;
@@ -32,8 +49,9 @@ export async function executeRun(deps: RunDeps, runId: string): Promise<void> {
     db.setStatus(runId, to, error);
     db.appendEvent(runId, "status", { status: to, ...(error ? { error } : {}) });
   };
+  const killRequested = () => db.getRun(runId)?.killRequested === true;
   const checkKill = () => {
-    if (db.getRun(runId)?.killRequested) throw new Killed();
+    if (killRequested()) throw new Killed();
   };
   const capturePatch = async () => {
     if (!sandbox || !cloned) return;
@@ -42,6 +60,52 @@ export async function executeRun(deps: RunDeps, runId: string): Promise<void> {
     const diff = await sandbox.exec(["git", "diff"], { workdir: REPO_DIR });
     db.savePatch(runId, diff.stdout);
     db.appendEvent(runId, "patch_captured", { bytes: diff.stdout.length });
+  };
+
+  /** Runs the agent in the sandbox, storing its events as they arrive. */
+  const runAgent = async (box: Sandbox, task: string): Promise<string> => {
+    const expiresAt = Math.floor(Date.now() / 1000) + config.runTokenTtlSeconds;
+    let reason = "agent_crashed";
+    const agent = box.exec(["node", "--experimental-strip-types", "--no-warnings", `${AGENT_DIR}/main.ts`], {
+      workdir: REPO_DIR,
+      timeoutSeconds: config.agentTimeoutSeconds,
+      env: {
+        GATEWAY_URL: config.gatewayUrl,
+        // The only credential in the sandbox: valid for this run, briefly, as "worker".
+        RUN_PASS: signRunToken(config.gatewayKey, runId, expiresAt),
+        TASK: task,
+        REPO_DIR,
+        MAX_STEPS: String(config.agentMaxSteps),
+      },
+      onStdoutLine: (line) => {
+        try {
+          const { type, ...data } = JSON.parse(line) as { type: string; reason?: string };
+          if (type === "finished" && data.reason) reason = data.reason;
+          db.appendEvent(runId, `agent_${type}`, data);
+        } catch {
+          if (line.trim()) db.appendEvent(runId, "agent_output", { line: line.slice(0, 500) });
+        }
+      },
+    });
+    // A kill must not wait for the agent's current step, so watch for it alongside.
+    let watching = true;
+    const killed = (async () => {
+      while (watching) {
+        if (killRequested()) throw new Killed();
+        await new Promise((resolve) => setTimeout(resolve, KILL_POLL_MS));
+      }
+    })();
+    try {
+      const result = await Promise.race([agent, killed.then(() => null)]);
+      if (result?.timedOut) reason = "timeout";
+      else if (result && result.exitCode !== 0 && reason === "agent_crashed") {
+        db.appendEvent(runId, "agent_output", { stderr: result.stderr.slice(-500) });
+      }
+    } finally {
+      watching = false;
+      agent.catch(() => {}); // if killed, the sandbox is destroyed underneath it
+    }
+    return reason;
   };
 
   try {
@@ -76,26 +140,12 @@ export async function executeRun(deps: RunDeps, runId: string): Promise<void> {
     cloned = true;
     checkKill();
 
-    // The pass the agent will use to reach the model. Until the agent exists,
-    // prove the path with an empty request from inside the sandbox: the gateway
-    // accepts the pass and rejects the body (400) without waking the model.
-    // Only the expiry is logged, never the pass itself.
-    const expiresAt = Math.floor(Date.now() / 1000) + config.runTokenTtlSeconds;
-    const pass = signRunToken(config.gatewayKey, runId, expiresAt);
-    const probe = await sandbox.exec([
-      "curl", "-s", "-m", "20", "-o", "/dev/null", "-w", "%{http_code}",
-      "-X", "POST", "-H", `Authorization: Bearer ${pass}`, "-H", "Content-Type: application/json",
-      "-d", "{}", `${config.gatewayUrl}/v1/chat`,
-    ]);
-    db.appendEvent(runId, "gateway_pass_checked", {
-      expiresAt,
-      httpStatus: Number(probe.stdout.trim()) || null,
-      accepted: probe.stdout.trim() === "400",
-    });
-    db.appendEvent(runId, "agent_skipped", { reason: "Harness not built yet (step 4)." });
-    checkKill();
-
+    db.appendEvent(runId, "agent_installed", { files: await installAgent(sandbox) });
+    const reason = await runAgent(sandbox, run.task);
     await capturePatch();
+    if (reason === "budget_exhausted") throw new BudgetStopped();
+    if (reason !== "finished") throw new Error(`The agent stopped without finishing: ${reason}`);
+
     move("reviewing");
     db.appendEvent(runId, "review_skipped", { reason: "Supervisor not built yet (step 7)." });
     move("done");
@@ -104,6 +154,8 @@ export async function executeRun(deps: RunDeps, runId: string): Promise<void> {
       // Decision 18: a killed run keeps whatever work exists so far.
       await capturePatch().catch(() => {});
       move("killed");
+    } else if (error instanceof BudgetStopped) {
+      move("budget_stopped");
     } else {
       move("failed", error instanceof Error ? error.message : String(error));
     }
