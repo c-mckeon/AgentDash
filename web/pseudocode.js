@@ -13,13 +13,13 @@
   ];
   // Shown above the detailed pseudocode, for readers who do not program.
   const WORDS = [
-    ["FUNCTION", "a named set of steps. Other code runs it by name, hands it some values, and gets a result back."],
-    ["GOES IN / COMES OUT", "the values a function is handed, and the result it hands back."],
-    ["Record", "a bundle of named values, for example a tool result with “ok” and “output”."],
-    ["List", "several values kept in order."],
-    ["Text", "any run of characters. Programmers call it a string."],
-    ["Event", "a record describing one thing that happened, sent out so the dashboard can show it."],
-    ["Numbered steps", "happen in order. Indented steps belong to the step above them."],
+    ["CALLED BY / TAKES / RETURNS", "which code runs a function, the values it is given (and where they come from), and the result it gives back."],
+    ["Type, interface", "a description of the form some data must have. It is checked while the code is written and does nothing when the code runs."],
+    ["Object", "a bundle of named values, written { name: value }. An array is an ordered list, written [a, b]."],
+    ["String", "a piece of text."],
+    ["Promise, await", "a promise is a result that will arrive later, such as a network reply. await pauses the function until it does."],
+    ["Throw, try, catch", "code that fails throws an error. Wrapping code in try lets a catch block receive the error instead of the program stopping."],
+    ["Export", "makes a function or value usable from other files. Without it, only this file can use it."],
   ];
   let files = null;
   let current = null;
