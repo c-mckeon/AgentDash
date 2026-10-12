@@ -1,0 +1,419 @@
+=== api/main.ts
+--- detail
+GOAL
+Start the API as a real, long-running process: read the settings,
+open the database file, connect to Modal, build the HTTP server
+and begin listening. All logic lives in the files it imports;
+this file only assembles them.
+
+THE PARTS WE NEED
+No functions of its own. Four objects are created in order:
+config, db, sandboxes and api.
+
+WHERE THE DATA COMES FROM AND GOES
+- .env supplies the secrets and addresses (through config.ts).
+- createApi (api/server.ts) receives the database, the owner
+  token and a startRun function.
+- startRun hands each new run id to executeRun
+  (orchestrator/run.ts), which does the actual work.
+
+WHERE IT RUNS
+Currently on the developer's PC, for live checks only. Hosting
+it is step 8 of the build order.
+
+@ 2-6 | Imports
+- loadConfig (config.ts): reads and validates settings
+- Db (db/index.ts): the database class
+- executeRun (orchestrator/run.ts): runs one run end to end
+- ModalSandboxProvider (sandbox-provider/modal.ts): creates
+  sandboxes on Modal
+- createApi (api/server.ts): builds the HTTP server
+
+@ 8-11 | Create the long-lived objects
+1. process.loadEnvFile(".env") reads the .env file and copies
+   each NAME=value line into process.env. Built into Node.
+2. config = loadConfig(). Throws, listing every missing name,
+   if GATEWAY_URL, GATEWAY_KEY or OWNER_TOKEN is absent.
+3. db = new Db(config.dbPath). Opens (or creates) the SQLite
+   file and creates the tables if they do not exist.
+4. sandboxes = new ModalSandboxProvider(). Opens a client to
+   Modal using the credentials in the local Modal profile.
+
+@ 13-18 | Build the server
+5. api = createApi({ db, ownerToken, startRun }).
+   startRun is (runId) => void executeRun({ db, sandboxes,
+   config }, runId).
+   executeRun returns a promise that settles when the run ends,
+   minutes later. "void" discards that promise on purpose: the
+   HTTP request that started the run gets its reply at once and
+   the run continues in the background.
+   Nothing here limits how many runs execute at once. The v1
+   rule of one run at a time is not yet enforced.
+
+@ 20-20 | Listen
+6. api.listen(config.port, callback) binds the port (8787 by
+   default) and logs the address once it is ready. The process
+   then stays alive, handling requests until it is stopped.
+
+=== api/server.ts
+--- detail
+GOAL
+Expose the system over HTTP. Reading is public (decision 16:
+visitors may watch runs); starting and killing a run requires
+the owner's token. The server only reads and writes the
+database and hands new runs to the orchestrator. It never
+touches a sandbox or a model itself.
+
+THE PARTS WE NEED
+1. Three constants: REPO_URL, MAX_TASK_LENGTH, MAX_BODY_BYTES.
+2. The ApiDeps type: what the server must be given.
+3. validateNewRun(body): checks the body of POST /runs.
+4. isOwner(request, ownerToken): checks the bearer token.
+5. readJson(request): reads and parses a request body.
+6. send(response, status, body): writes a JSON reply.
+7. createApi(deps): returns the HTTP server, containing one
+   request handler that does all the routing.
+
+THE ROUTES
+- GET  /health               public
+- GET  /runs                 public; list of runs
+- POST /runs                 owner; create and start a run
+- GET  /runs/:id             public; one run + model choices
+- GET  /runs/:id/events      public; events, optionally ?after=N
+- POST /runs/:id/kill        owner; request a stop
+
+WHERE THE DATA COMES FROM AND GOES
+- deps comes from api/main.ts (real parts) or from the tests
+  (an in-memory database and a recording startRun).
+- Every read and write goes through the Db methods.
+- A kill is only recorded here, as a flag on the run. The
+  orchestrator polls that flag and does the stopping.
+
+@ 7-12 | Imports
+- randomBytes, timingSafeEqual (node:crypto): random ids, and a
+  comparison whose duration does not depend on the data
+- createServer (node:http), plus the IncomingMessage, Server
+  and ServerResponse types
+- the Db type (db/index.ts)
+- isTerminal (orchestrator/state.ts): is a status final?
+
+@ 14-17 | Constants
+- REPO_URL: a regular expression that accepts only
+  https://github.com/<owner>/<name>, optionally ending ".git".
+  Restricting to public HTTPS repositories means a sandbox
+  never needs credentials to clone.
+- MAX_TASK_LENGTH = 4000 characters.
+- MAX_BODY_BYTES = 64 * 1024, i.e. 64 KB.
+
+@ 19-24 | interface ApiDeps
+- db: the database object
+- ownerToken: the secret that authorises writes
+- startRun(runId): hands a new run to the orchestrator. The
+  comment states the contract: it must return immediately.
+
+@ 26-35 | validateNewRun(body)
+CALLED BY: the POST /runs branch, and the tests directly.
+TAKES:     body, whatever JSON the client sent (type unknown).
+RETURNS:   { task, repoUrl } if valid, otherwise a string
+           describing the first problem. The caller tells the
+           two apart with typeof.
+
+1. Not an object, or null: "body must be a JSON object".
+2. Pull out task and repoUrl.
+3. task must be a string that is non-empty after trim().
+4. task.length must not exceed MAX_TASK_LENGTH.
+5. repoUrl must be a string that matches REPO_URL.
+6. Return { task: task.trim(), repoUrl }.
+Only these two fields are returned, so anything else the client
+sent is discarded.
+
+@ 37-41 | isOwner(request, ownerToken)
+CALLED BY: the POST /runs and POST .../kill branches.
+RETURNS:   true if the Authorization header holds the token.
+
+1. Read the authorization header ("" if absent) and strip the
+   leading "Bearer ".
+2. Convert both the given and expected tokens to Buffers (raw
+   bytes).
+3. Return true only if the lengths are equal AND
+   timingSafeEqual says the bytes match.
+The length test comes first because timingSafeEqual throws on
+unequal lengths. A normal === comparison stops at the first
+differing character, which lets an attacker measure response
+times to guess a token one character at a time.
+
+@ 43-52 | readJson(request)
+CALLED BY: the POST /runs branch.
+RETURNS:   a promise of the parsed body.
+
+1. A request body arrives as a stream of chunks. "for await"
+   reads them one at a time.
+2. Keep a running byte count; throw "body too large" once it
+   passes MAX_BODY_BYTES, so a huge upload cannot exhaust
+   memory.
+3. Buffer.concat joins the chunks, toString("utf8") decodes
+   them, and JSON.parse parses the text. An empty body is
+   parsed as "null".
+Both the size error and a JSON syntax error are thrown; the
+caller catches them and answers 400.
+
+@ 54-57 | send(response, status, body)
+Writes the status line and a content-type of application/json,
+then the body converted with JSON.stringify, and ends the
+response. Every reply in this file goes through it.
+
+@ 59-66 | createApi(deps): the handler's first steps
+CALLED BY: api/main.ts, orchestrator/try-it.ts and the tests.
+RETURNS:   a Server. The caller decides when to listen.
+
+createServer is given one async function, which Node calls for
+every incoming request. Inside a try block:
+1. Parse request.url into a URL object. The second argument is
+   a dummy base, needed because request.url is only a path.
+2. Split the path on "/". "/runs/abc/kill" becomes
+   ["", "runs", "abc", "kill"]; the destructuring skips the
+   first element and names the rest root, runId and action.
+3. method = request.method, defaulting to "GET".
+
+@ 68-69 | Health check and unknown roots
+4. GET /health: send 200 { ok: true }.
+5. If root is not "runs": send 404.
+Each branch is written "return send(...)", so handling stops
+at the first match.
+
+@ 71-72 | GET /runs
+6. With no runId and method GET: send 200 with
+   { runs: db.listRuns() }, the newest 50 runs.
+
+@ 73-80 | POST /runs: authorise and read the body
+7. If isOwner is false: send 401 "unauthorised".
+8. await readJson(request) inside its own try/catch; on any
+   error send 400 "body is not valid JSON".
+
+@ 81-86 | POST /runs: create and start the run
+9. valid = validateNewRun(body). If it is a string, send 400
+   with that message.
+10. Build the id: "run_" + randomBytes(6) as 12 hex characters.
+11. db.createRun inserts the row with status "queued" and
+    returns it.
+12. db.appendEvent(run.id, "status", { status: "queued" }), so
+    the event log starts with the run's creation.
+13. startRun(run.id) hands it to the orchestrator and returns
+    at once.
+14. Send 201 (Created) with the run. The client now polls
+    GET /runs/:id and /events to follow it.
+
+@ 87-89 | Other methods on /runs
+15. Anything else on /runs: send 405 "method not allowed".
+
+@ 91-92 | Routes that name a run
+16. run = db.getRun(runId). If null, send 404 "no such run".
+
+@ 94-96 | GET /runs/:id
+17. Send 200 with the run and db.listAssignments(runId), the
+    record of which model tier was chosen and why.
+
+@ 97-100 | GET /runs/:id/events
+18. Read the "after" query parameter. Number(...) || 0 turns a
+    missing or non-numeric value into 0.
+19. Send 200 with db.listEvents(runId, after): the events whose
+    id is greater than after.
+A client remembers the last id it received and passes it next
+time, so each poll returns only what is new.
+
+@ 101-107 | POST /runs/:id/kill
+20. Not the owner: 401.
+21. If isTerminal(run.status), the run has already ended: send
+    409 (Conflict) "run already <status>".
+22. db.requestKill(runId) sets the kill_requested flag.
+23. Append a "kill_requested" event.
+24. Send 202 (Accepted). The request is recorded, not yet
+    carried out: executeRun checks the flag once a second and
+    then destroys the sandbox.
+
+@ 108-112 | Fallthrough and errors
+25. Any other method or action under a run: 404.
+26. The catch around the whole handler turns any unexpected
+    error into a 500 with its message, so one bad request can
+    never crash the server process.
+
+=== db/index.ts
+--- detail
+GOAL
+Be the only code that knows how data is stored. Everything else
+calls methods on a Db object and receives plain objects back.
+Storage is SQLite, a database kept in a single file, accessed
+through the driver built into Node. Moving to hosted Postgres
+at deploy time should mean rewriting this file and nothing else.
+
+THE PARTS WE NEED
+1. SCHEMA: the SQL that creates three tables and one index.
+2. Three types for what callers receive: Run, RunEvent,
+   ModelAssignment.
+3. Two converters from database rows to those types: toRun and
+   toEvent.
+4. The Db class, whose methods are the entire storage API:
+   createRun, getRun, listRuns, setStatus, requestKill,
+   savePatch, saveSandboxUsage, appendEvent, listEvents,
+   addAssignment, listAssignments, close.
+
+WHERE THE DATA COMES FROM AND GOES
+- api/server.ts creates runs, reads runs and events, and sets
+  the kill flag.
+- orchestrator/run.ts changes statuses, appends events, saves
+  the patch and the sandbox cost, and reads the kill flag.
+- orchestrator/state.ts supplies the rule setStatus enforces.
+
+A DESIGN CHOICE
+The driver is synchronous: each call blocks until SQLite has
+answered. That keeps the code simple (no awaits) and is fine at
+this scale, since each query takes microseconds.
+
+@ 8-11 | Imports
+- DatabaseSync (node:sqlite): Node's built-in SQLite driver
+- assertTransition and the RunStatus type from
+  orchestrator/state.ts
+
+@ 13-26 | SCHEMA: the runs table
+SCHEMA is one string of SQL, run when a Db is created. "CREATE
+TABLE IF NOT EXISTS" makes that safe to repeat.
+
+runs has one row per run:
+- id: text, the primary key (unique, used for lookups)
+- task, repo_url: what was asked, and on which repository
+- status: one of the eight lifecycle statuses
+- kill_requested: 0 or 1 (SQLite has no boolean type)
+- patch, error: empty until there is one
+- sandbox_seconds, sandbox_cost_usd: filled in when the sandbox
+  is destroyed
+- created_at, updated_at: timestamps as ISO text
+
+@ 27-34 | SCHEMA: the events table
+events has one row per thing that happened:
+- id: an integer SQLite assigns in increasing order
+  (AUTOINCREMENT). It doubles as the cursor for "events after N".
+- run_id: which run it belongs to (REFERENCES runs)
+- at: timestamp
+- type: for example "status" or "agent_tool_call"
+- data: the event's details, stored as JSON text
+The index events_by_run on (run_id, id) lets SQLite fetch one
+run's events in order without scanning the whole table.
+
+@ 35-43 | SCHEMA: the model_assignments table
+One row each time a model is chosen for a run:
+- run_id, at
+- tier: which model size
+- decided_by: "default" today; the router or supervisor later
+- reason: text
+Kept separate from events because step 6 (the router) will
+query it on its own.
+
+@ 45-73 | The types callers see
+- Run: the runs row with camelCase names, killRequested as a
+  real boolean, and status typed as RunStatus
+- RunEvent: id, runId, at, type, and data as a parsed object
+- ModelAssignment: runId, at, tier, decidedBy, reason
+"string | null" means the field may be empty.
+
+@ 75-97 | toRun and toEvent
+Row is a loose type for whatever the driver returns.
+- toRun(row) copies each column into a Run, renaming
+  snake_case to camelCase and converting kill_requested === 1
+  into true or false.
+- toEvent(row) does the same for events and applies
+  JSON.parse to the data column.
+All knowledge of column names is confined to these two
+functions and the SQL strings.
+
+@ 99-111 | class Db: construction
+The "#" prefix makes a field private to the class.
+- #db: the open database connection
+- #now: a function returning the current Date
+
+constructor(path, now):
+1. new DatabaseSync(path) opens the file, creating it if
+   needed. The special path ":memory:" gives a database that
+   exists only in memory; the tests and try-it.ts use that.
+2. exec(SCHEMA) creates the tables and index.
+3. Store now. It defaults to () => new Date(); tests pass a
+   fixed clock to make timestamps predictable.
+
+#stamp() returns the current time as an ISO string, the form
+stored in every "at" and "*_at" column.
+
+@ 113-119 | createRun(run)
+CALLED BY: POST /runs in api/server.ts.
+TAKES:     { id, task, repoUrl }.
+RETURNS:   the stored Run.
+
+1. prepare() compiles an INSERT whose values are "?"
+   placeholders; run() supplies them. Values passed this way
+   are never interpreted as SQL, which is what prevents SQL
+   injection.
+2. status is written as the literal 'queued'; created_at and
+   updated_at both get the same timestamp.
+3. Return this.getRun(run.id). The "!" asserts it cannot be
+   null, since it was inserted a moment ago.
+
+@ 121-124 | getRun(id)
+SELECT the row with that id. get() returns one row or
+undefined. Return toRun(row), or null if there was none.
+
+@ 126-128 | listRuns(limit)
+SELECT all runs ORDER BY created_at DESC LIMIT ?, i.e. the
+newest first, 50 unless told otherwise. all() returns an array
+of rows, and map(toRun) converts each.
+
+@ 130-139 | setStatus(id, to, error)
+CALLED BY: the "move" helper in orchestrator/run.ts.
+RETURNS:   the updated Run.
+
+1. Load the run; throw if it does not exist.
+2. assertTransition(run.status, to) throws if the lifecycle
+   does not permit the move, for example done -> running. The
+   rule is enforced here, at the single place statuses are
+   written, so no caller can bypass it.
+3. UPDATE status, error and updated_at.
+   "COALESCE(?, error)" means: use the new error if one was
+   given, otherwise keep the existing value.
+4. Return the run re-read from the database.
+
+@ 141-143 | requestKill(id)
+UPDATE kill_requested = 1. This is not a status change: the
+run keeps its current status until the orchestrator notices
+the flag and moves it to "killed".
+
+@ 145-147 | savePatch(id, patch)
+UPDATE the patch column with the git diff text.
+
+@ 149-153 | saveSandboxUsage(id, seconds, costUsd)
+UPDATE sandbox_seconds and sandbox_cost_usd. Called from the
+"finally" block of executeRun, so it happens however the run
+ended.
+
+@ 155-161 | appendEvent(runId, type, data)
+CALLED BY: the API and the orchestrator, for every event.
+RETURNS:   the stored RunEvent, including its new id.
+
+1. INSERT run_id, the timestamp, type, and
+   JSON.stringify(data).
+2. result.lastInsertRowid is the id SQLite assigned. Return it
+   as a normal number with the other fields.
+
+@ 163-169 | listEvents(runId, afterId)
+SELECT events WHERE run_id = ? AND id > ? ORDER BY id.
+afterId defaults to 0, which returns everything. This query is
+what makes following a run cheap: each poll passes the last id
+it saw.
+
+@ 171-175 | addAssignment(runId, assignment)
+INSERT one row into model_assignments with the tier, who
+decided, and the reason.
+
+@ 177-188 | listAssignments(runId)
+SELECT that run's assignments ORDER BY id, and map each row to
+a ModelAssignment with camelCase names.
+
+@ 190-192 | close()
+Closes the connection. Used by tests and by try-it.ts so the
+process can exit cleanly.

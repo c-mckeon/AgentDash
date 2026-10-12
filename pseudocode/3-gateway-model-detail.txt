@@ -1,0 +1,813 @@
+=== gateway/core.py
+--- detail
+GOAL
+Hold every rule the gateway applies, as plain functions with no
+side effects: they read no files, call no network, and know
+nothing about Modal or the web framework. main.py supplies the
+data and acts on the answers. That split lets all of these rules
+be unit-tested on any machine (tests/test_gateway_core.py), and
+lets the gateway move to another server later without rewriting
+them.
+
+THE PARTS WE NEED
+1. Constants: Modal's prices, the monthly budget, token limits,
+   and the allowed role names.
+2. ModelEntry: a record describing one model and its machine.
+3. REGISTRY: the table of ModelEntry records, keyed by tier.
+4. Passes: sign_run_token and verify_run_token.
+5. Money: month_key, cost_usd, idle_seconds, effective_spend,
+   budget_status, budget_view, total_spent, summarise.
+6. Requests: validate_chat_request.
+7. Ledger: last_end and make_record.
+
+WHERE THE DATA COMES FROM AND GOES
+- main.py calls these on every request, passing in the ledger
+  records it read from disk and the figure from Modal's billing.
+- orchestrator/tokens.ts implements the same pass format in
+  TypeScript. A shared test vector in both test suites keeps the
+  two in step.
+- model-server/serve.py must be deployed with the same cores,
+  memory and scaledown window recorded in REGISTRY, because
+  prices here are computed from those numbers.
+
+@ 7-10 | Imports
+All from Python's standard library:
+- hashlib and hmac: for signing passes
+- dataclass and asdict: a compact way to declare a record type,
+  and to turn one into a dictionary
+- datetime: for timestamps
+
+@ 12-14 | Modal's prices
+- CPU_CORE_SECOND_USD = 0.0000131 per core per second
+- MEMORY_GIB_SECOND_USD = 0.00000222 per GiB per second
+These are the rates for Modal functions. Sandboxes are priced
+separately, in sandbox-provider/pricing.ts.
+
+@ 16-18 | The hard stop
+MONTHLY_BUDGET_USD = 0.50 for the calendar month, in UTC.
+It is set well under the design's 10 euro ceiling because the
+Modal account currently holds only $1 of free credit.
+
+@ 20-23 | Request limits
+- MAX_OUTPUT_TOKENS = 1024: the most a caller may ask for
+- DEFAULT_OUTPUT_TOKENS = 512: used when none is given
+- ROLES: worker, triage, supervisor, manual. The role is
+  recorded on each ledger line so cost can be split by purpose.
+- MESSAGE_ROLES: system, user, assistant, tool. The speaker
+  labels allowed inside a conversation.
+
+@ 26-45 | class ModelEntry: the fields
+@dataclass(frozen=True) generates the constructor, and makes
+instances read-only once created.
+- tier: the name callers ask for ("small")
+- model: the Ollama model name
+- provider: who serves it ("modal-ollama")
+- hardware: "cpu" or "gpu", shown on the dashboard
+- cpu_cores, memory_gib: the machine's size, used for pricing
+- context_tokens: the model's context window
+- idle_window_seconds: how long the machine stays up, and is
+  billed, after its last call. Must equal SCALEDOWN_SECONDS in
+  serve.py.
+- wake_overhead_seconds: extra billed time per start and stop.
+  Measured from Modal's bill on 2026-10-12 as 16 s and 46 s on
+  two wakes, so 30 is a rough estimate.
+- num_threads: how many threads Ollama may use. Modal bills CPU
+  actually used above the reservation, and Ollama uses every
+  core it can see, so this is pinned to cpu_cores to keep the
+  real price equal to the price computed here.
+
+@ 47-52 | ModelEntry: two derived values
+- usd_per_second (a @property, read like a field):
+  cpu_cores * CPU rate + memory_gib * memory rate.
+  For the small tier: 4 * 0.0000131 + 4 * 0.00000222
+  = 0.00006128 per second, about 22 cents an hour.
+- public(): all fields as a dictionary plus usd_per_second.
+  This is what GET /v1/models returns.
+
+@ 55-70 | REGISTRY
+A dictionary with one entry so far:
+"small" -> qwen2.5-coder:1.5b on modal-ollama, cpu, 4 cores,
+4 GiB, 4096 tokens, 60 s idle window, 30 s wake overhead,
+4 threads.
+Callers send a tier, never a model name. Adding the larger
+model for step 6 is a second entry here, plus pulling that
+model in serve.py.
+
+@ 73-80 | sign_run_token(secret, run_id, expires_at)
+CALLED BY: the tests only. In production the orchestrator signs
+           passes with the TypeScript twin of this function.
+TAKES:     secret (the gateway key), a run id, and an expiry as
+           seconds since 1970.
+RETURNS:   "<run id>.<expiry>.<signature>".
+
+1. payload = run id, a dot, and the expiry as a whole number.
+2. hmac.new(secret, payload, sha256).hexdigest() computes an
+   HMAC: a 64-character fingerprint of the payload that can
+   only be produced by someone holding the secret.
+3. Return payload + "." + that fingerprint.
+The pass is not encrypted; the run id and expiry are readable.
+What it provides is proof that we issued it and that neither
+part has been altered.
+
+@ 83-94 | verify_run_token(secret, token, now)
+CALLED BY: run_from_pass in main.py, on /v1/chat requests.
+TAKES:     the gateway key, the token from the Authorization
+           header, and the current time.
+RETURNS:   the run id, or None if the pass is not acceptable.
+
+1. Split on "."; anything other than three parts: None.
+2. Recompute the HMAC of "<run id>.<expiry>" with our secret.
+3. hmac.compare_digest(given, expected) compares them in
+   constant time. If they differ, the pass was forged or
+   altered: None.
+4. The expiry must be all digits and now must be before it;
+   otherwise None.
+5. Return the run id.
+No database is consulted. The gateway can therefore verify
+passes without access to the orchestrator's data.
+
+@ 97-98 | month_key(now)
+Formats a datetime as "YYYY-MM". It names the ledger file and
+defines the period the budget covers.
+
+@ 101-102 | cost_usd(entry, seconds)
+max(seconds, 0) * entry.usd_per_second. The max guards against
+a negative duration producing a negative cost.
+
+@ 105-116 | idle_seconds(previous_end, started, window, wake_overhead)
+CALLED BY: the /v1/chat handler, before calling the model.
+TAKES:     when the previous call to this machine ended (or
+           None), when this call starts, the machine's idle
+           window, and its wake overhead.
+RETURNS:   the seconds billed since the previous call during
+           which the machine did no work.
+
+1. No previous call: return 0.
+2. gap = started - previous_end, floored at 0 in case a clock
+   moved backwards.
+3. gap <= window: the machine was still up, so the whole gap
+   was billed. Return gap.
+4. Otherwise the machine shut down after "window" seconds and
+   has to start again: return window + wake_overhead.
+
+This function exists because of a research finding: the first
+ledger recorded only about an eighth of Modal's actual bill.
+Most of the cost of a short call is the minute the machine
+stays up afterwards, not the call.
+
+@ 119-125 | effective_spend(ledger_usd, vendor_usd)
+max(ledger_usd, vendor_usd or 0).
+The ledger is immediate but an estimate. Modal's meter is exact
+but lags a minute or two, and may be unavailable (None). Taking
+the larger means that when the two disagree, the hard stop
+fires sooner, not later.
+
+@ 128-134 | budget_status(spent_usd, limit_usd)
+Returns a dictionary:
+- spent_usd, rounded to 6 places
+- limit_usd
+- remaining_usd: limit minus spent, never below 0
+- exhausted: spent >= limit
+"exhausted" is the single flag the hard stop tests.
+
+@ 137-142 | budget_view(ledger_usd, vendor_usd, limit_usd)
+budget_status computed on effective_spend, with the two
+underlying figures added as ledger_usd and vendor_metered_usd.
+This is the "budget" object returned by /v1/usage and /v1/chat,
+and the source of the dashboard's budget tile.
+
+@ 145-146 | total_spent(records)
+The sum of cost_usd over a list of ledger records; a record
+without the field counts as 0.
+
+@ 149-180 | summarise(records)
+CALLED BY: GET /v1/usage.
+RETURNS:   totals overall, and grouped by role.
+
+1. by_role starts as an empty dictionary.
+2. For each record, setdefault fetches the bucket for its role,
+   creating one full of zeros the first time that role appears.
+   Then add this record's calls (1), cost, billed seconds, idle
+   seconds, and prompt and output tokens.
+3. Round each bucket's money to 6 places and seconds to 3.
+4. Return calls, cost_usd, billed_seconds and idle_seconds for
+   the whole list, plus by_role.
+Once the router and supervisor exist, this is what will show
+how much of the spend each role accounts for.
+
+@ 183-190 | validate_chat_request(body): tier
+CALLED BY: the /v1/chat handler, with the parsed JSON body.
+RETURNS:   a pair: (clean request, None) if valid, or
+           (None, reason) if not. Returning the reason as data,
+           not raising, lets the handler send it as a 400.
+
+1. body must be a dictionary.
+2. tier defaults to "small" and must be a key of REGISTRY; the
+   error lists the known tiers.
+
+@ 192-199 | validate_chat_request: messages
+3. messages must be a non-empty list.
+4. Every message must be a dictionary whose role is in
+   MESSAGE_ROLES and whose content, if present, is a string.
+
+@ 201-211 | validate_chat_request: tools, role, run id
+5. tools, if present, must be a list. (Kept for Ollama's native
+   tool channel; the agent itself does not use it.)
+6. role defaults to "manual" and must be in ROLES.
+7. run_id, if present, must be a string of at most 100
+   characters.
+
+@ 213-219 | validate_chat_request: numeric settings
+8. max_tokens defaults to 512 and must be an integer of at
+   least 1. The explicit bool check is needed because in Python
+   True and False count as integers.
+9. temperature defaults to 0 and must be a number from 0 to 2,
+   with the same bool exclusion.
+
+@ 221-224 | validate_chat_request: response format
+10. response_format may be absent, the string "json" (any JSON
+    object), or a dictionary (a JSON schema the reply must
+    match). The agent sends a schema.
+
+@ 226-235 | validate_chat_request: the clean request
+11. Return a new dictionary containing only the eight known
+    fields, with max_tokens capped at MAX_OUTPUT_TOKENS, and
+    None as the error.
+Building a fresh dictionary means unknown fields a caller sent
+never travel any further.
+
+@ 238-243 | last_end(records, tier)
+CALLED BY: the /v1/chat handler, to feed idle_seconds.
+Walks the records from newest to oldest and returns ended_at
+from the first one for this tier that has it; None if there is
+none. Tier matters because each tier will be a separate
+machine with its own idle clock.
+
+@ 246-276 | make_record(...)
+CALLED BY: the /v1/chat handler, after the model has replied.
+TAKES:     keyword arguments only (that is what the lone "*"
+           enforces): the time, the clean request, the model's
+           entry, billed_seconds, idle, ended_at, and the reply.
+RETURNS:   one ledger line as a dictionary:
+- at, ended_at: start as text, end as a number for last_end
+- run_id, role: from the request
+- tier, model, hardware: from the entry
+- billed_seconds: the gateway's own stopwatch around the call,
+  including any cold start
+- idle_seconds: the billed idle time that preceded it
+- model_seconds, prompt_tokens, output_tokens: reported by the
+  model service and Ollama (0 if the call failed)
+- cost_usd: cost_usd(entry, billed_seconds + idle)
+- error: the error text, or None
+A failed call is still recorded and still charged for its time,
+because Modal bills it either way.
+
+=== gateway/main.py
+--- detail
+GOAL
+Run the gateway as a web service on Modal. It is the single
+public address for model requests, and the only place the
+budget is enforced. For each chat request it authenticates the
+caller, validates the body, applies the hard stop, calls the
+private model service, records the cost, and replies.
+
+THE PARTS WE NEED
+1. Modal declarations: an image, a volume and an app.
+2. read_ledger and append_ledger: the ledger file on the volume.
+3. web(): one function that builds and returns the web
+   application. Inside it:
+   - vendor_spend(): Modal's own cost figure, cached 60 s
+   - authorised(), run_from_pass(), denied(): authentication
+   - four route handlers: health, models, usage, chat
+
+THE ROUTES
+- GET  /health      public
+- GET  /v1/models   owner key
+- GET  /v1/usage    owner key
+- POST /v1/chat     owner key, or a per-run pass
+
+WHERE THE DATA COMES FROM AND GOES
+- Callers: the agent in a sandbox (with a run pass), and the
+  owner's scripts (try_it.py, experiments.py) with the key.
+- GATEWAY_KEY arrives as an environment variable from the Modal
+  secret "agentdash-gateway".
+- The ledger lives on the Modal volume "agentdash-ledger" as
+  /ledger/<YYYY-MM>.jsonl.
+- The model is reached through Modal's function-call mechanism,
+  not over HTTP.
+
+A DESIGN CHOICE
+max_containers=1 plus one asyncio.Lock. Between checking the
+budget and writing the ledger line, no other request can do
+either, so two simultaneous calls cannot both pass the check on
+the last cent.
+
+@ 11-21 | Imports
+- asyncio: the lock, and running blocking code off the main
+  thread
+- hmac, json, os, time, datetime, Path: standard library
+- modal: Modal's Python library
+- core: our rules, from core.py
+
+@ 23-24 | Constants
+- MODEL_APP = "agentdash-model": the Modal app to call
+- LEDGER_DIR = /ledger: where the volume is mounted
+
+@ 26-30 | The container image
+Declares what the gateway's container contains:
+1. Debian slim with Python 3.12.
+2. pip install fastapi[standard], the web framework.
+3. add_local_python_source("core") copies core.py in, so
+   "import core" works in the cloud as it does locally.
+Modal builds this once and reuses it until the recipe changes.
+
+@ 32-35 | Volume and app
+- ledger_volume: a named persistent disk, created on first use.
+  A container's own disk vanishes when it stops; a volume does
+  not.
+- app = modal.App("agentdash-gateway"): the unit that
+  "modal deploy" deploys. Its name is part of the public URL.
+
+@ 38-42 | read_ledger(month)
+RETURNS: the month's records as a list of dictionaries.
+1. path = /ledger/<month>.jsonl.
+2. No file yet: return an empty list.
+3. Otherwise json.loads each non-blank line. JSON Lines means
+   one complete JSON object per line, which makes appending
+   safe: a new record never requires rewriting earlier ones.
+
+@ 45-47 | append_ledger(month, record)
+Opens the file in mode "a" (append) and writes the record as
+one line.
+
+@ 50-62 | How Modal should run web()
+Three decorators, lines beginning "@", attach settings to the
+function defined below them:
+- @app.function(...): run it in the image above, with the
+  secret (as environment variables), the volume mounted at
+  /ledger, 0.25 CPU cores, 256 MB, a 600 s limit per request,
+  scale down after 60 idle seconds, and at most one container.
+- @modal.concurrent(max_inputs=20): that container may handle
+  20 requests at the same time.
+- @modal.asgi_app(): the function returns a web application,
+  and Modal should route HTTP to it at a public URL.
+
+@ 63-74 | web(): one-time setup
+web() runs once each time a container starts. What it creates
+is shared by every request that container serves.
+1. Import FastAPI here, not at the top of the file, because the
+   package exists only inside the container image.
+2. api = FastAPI(...): the application object.
+3. model = modal.Cls.from_name(MODEL_APP, "Model")(): a handle
+   to the Model class deployed by serve.py. Creating the handle
+   starts nothing.
+4. lock = asyncio.Lock().
+5. vendor = { usd, at, error }: a cache of the last answer from
+   Modal's billing and when it was fetched.
+
+@ 76-90 | vendor_spend()
+CALLED BY: the usage and chat handlers.
+RETURNS:   Modal's metered cost for the month in USD, or None
+           if it has never been obtained.
+
+1. If the cached value is under 60 seconds old, return it.
+2. Otherwise call Workspace.billing.summary(cycle="this
+   month"). That call blocks, so asyncio.to_thread runs it on
+   a worker thread and other requests keep being served.
+3. Store the larger of the summary's total and the sum of its
+   per-item breakdown.
+4. On any exception, keep the previous figure and store the
+   error text; /v1/usage reports it.
+5. Record the time and return the figure.
+This is the workspace's entire bill, sandboxes included, not
+only model calls. That makes the hard stop a ceiling on the
+whole month's spend.
+
+@ 92-95 | authorised(request)
+Reads the Authorization header, removes "Bearer ", and
+compares it with GATEWAY_KEY using hmac.compare_digest
+(constant time). True means the caller is the owner.
+
+@ 97-100 | run_from_pass(request)
+Passes the same header value to core.verify_run_token with the
+gateway key and the current time. Returns the run id if it is
+a valid, unexpired pass, otherwise None.
+
+@ 102-103 | denied()
+Returns a JSON response {"error": "unauthorised"} with status
+401. Used by every protected route.
+
+@ 105-107 | GET /health
+@api.get("/health") registers the function below it as the
+handler. It returns {"ok": true} without authentication. The
+sandbox check uses it to confirm a sandbox can reach the
+gateway.
+
+@ 109-113 | GET /v1/models
+Owner only. Returns entry.public() for every entry in
+core.REGISTRY: the tiers, their hardware and their price per
+second.
+
+@ 115-127 | GET /v1/usage
+Owner only.
+1. month = core.month_key(now in UTC).
+2. records = read_ledger(month).
+3. Return the month, the budget view (ledger total and Modal's
+   meter), any error from the meter, the summary by role, and
+   the last 20 records.
+orchestrator/try-it.ts calls this to capture the budget figures
+shown on the dashboard.
+
+@ 129-135 | POST /v1/chat: who is calling
+1. If authorised(request), pass_run_id is None: the owner may
+   call as any role.
+2. Otherwise pass_run_id = run_from_pass(request).
+3. If the caller is neither the owner nor a valid pass holder,
+   return denied().
+
+@ 136-142 | POST /v1/chat: read and validate the body
+4. await request.json(); on ValueError (not JSON) return 400.
+5. clean, problem = core.validate_chat_request(body). If
+   problem is set, return 400 with that text.
+
+@ 143-146 | POST /v1/chat: limit what a pass can do
+6. If a pass was used, overwrite clean["run_id"] with the run
+   id taken from the pass and clean["role"] with "worker".
+   Whatever the sandbox put in those fields is ignored, so code
+   in a sandbox cannot charge another run or claim to be the
+   supervisor.
+7. entry = core.REGISTRY[clean["tier"]].
+
+@ 148-156 | POST /v1/chat: the hard stop
+"async with lock:" waits until no other request holds the lock,
+and releases it when the indented block ends.
+8. Read this month's ledger and total it.
+9. vendor_usd = await vendor_spend().
+10. budget = core.budget_view(ledger_usd, vendor_usd).
+11. If budget["exhausted"], return 402 (Payment Required) with
+    {"error": "budget_exhausted", "budget": ...}. The model is
+    not called and nothing is written. The agent maps this
+    status to the stop reason "budget_exhausted".
+
+@ 158-163 | POST /v1/chat: billed idle time before this call
+12. idle = core.idle_seconds(the end time of the last call to
+    this tier, now, the entry's idle window, its wake
+    overhead).
+
+@ 164-180 | POST /v1/chat: call the model
+13. started = time.monotonic(), a clock that only moves
+    forward, taken before the call so that a cold start or
+    queueing is included in the measured time.
+14. await model.chat.remote.aio(...) invokes the Model.chat
+    method in the other Modal app and waits for its return
+    value. Arguments: the model name, the messages, the tools,
+    an options dictionary (num_predict = max_tokens,
+    temperature, num_thread), and the response format.
+15. If that raises (machine failed, timed out, or the app is
+    not deployed), set reply to {"error": "model service
+    failed: ..."}.
+16. billed_seconds = time.monotonic() - started.
+
+@ 182-193 | POST /v1/chat: record the cost
+17. record = core.make_record(...) from the values above.
+18. append_ledger(month, record).
+19. await ledger_volume.commit.aio() pushes the written file to
+    the volume's durable storage. Without the commit, the line
+    could be lost when the container shuts down.
+20. Recompute budget with this call's cost added, for the
+    reply.
+The lock is released here.
+
+@ 195-206 | POST /v1/chat: the usage block
+21. usage_out copies seven fields from the record: prompt and
+    output tokens, model_seconds, billed_seconds, idle_seconds,
+    cost_usd and hardware. The agent attaches this to its
+    "model" event, which is where the dashboard's per-run cost
+    figures come from.
+
+@ 207-217 | POST /v1/chat: reply
+22. If reply contains an error, return 502 (Bad Gateway) with
+    the error, usage and budget.
+23. Otherwise return the tier, the model name, reply["message"]
+    (Ollama's message object, whose content field holds the
+    text), usage and budget.
+
+@ 219-219 | Hand the application to Modal
+web() returns api. Modal serves it at the app's public URL.
+
+=== gateway/try_it.py
+--- detail
+GOAL
+Give the owner a one-line way to exercise the deployed gateway
+from the PC: send a single prompt, or print the month's usage.
+It uses only Python's standard library, so it runs without
+installing anything.
+
+THE PARTS WE NEED
+1. load_env(): parse the .env file into a dictionary.
+2. call(env, path, body): one HTTP request to the gateway.
+3. main(): interpret the command line and print the result.
+
+WHERE THE DATA COMES FROM AND GOES
+- GATEWAY_URL and GATEWAY_KEY come from .env in the project
+  root, which Git ignores.
+- research/experiments.py imports this file and reuses its
+  load_env and call functions.
+- Each prompt sent is a real model call, so it appears in the
+  ledger with role "manual".
+
+@ 9-13 | Imports
+json, sys, urllib.request and urllib.error (the standard
+library's HTTP client and its error type), and Path.
+
+@ 16-22 | load_env()
+RETURNS: a dictionary of the names and values in .env.
+1. Locate .env two directories above this file: __file__ is
+   this script, .parent.parent is the project root.
+2. For each line that contains "=" and does not start with "#":
+   split at the first "=" only, so a value may itself contain
+   "="; strip spaces; store it.
+
+@ 25-30 | call(env, path, body): build the request
+TAKES:   the env dictionary, a path such as "/v1/usage", and an
+         optional body.
+RETURNS: a pair (HTTP status, parsed JSON reply).
+
+1. URL = GATEWAY_URL without a trailing slash, plus the path.
+2. data = the body as JSON bytes, or None. urllib sends a POST
+   when data is present and a GET when it is None, which is how
+   one function serves both routes.
+3. Headers: Authorization "Bearer <GATEWAY_KEY>" and
+   Content-Type application/json.
+
+@ 31-35 | call: send it
+4. urlopen with a 300-second timeout. A call that wakes the
+   model machine can take a while.
+5. Success: return the status and the parsed body.
+6. urllib raises HTTPError for 4xx and 5xx. Catch it and return
+   its code and body in the same form, so the caller can print
+   a 402 or 502 instead of crashing.
+
+@ 38-41 | main(): arguments
+1. env = load_env().
+2. sys.argv holds the command-line words; fewer than two means
+   no argument was given. sys.exit(__doc__) prints the text at
+   the top of the file as usage help and stops.
+
+@ 42-49 | main(): choose the request
+3. "--usage": call(env, "/v1/usage").
+4. Anything else is treated as the prompt: call /v1/chat with
+   one user message, role "manual" and max_tokens 200.
+
+@ 50-51 | main(): output
+5. Print the status, then the reply as indented JSON.
+
+@ 54-55 | Script entry
+The standard Python idiom: run main() only when the file is
+executed directly, not when experiments.py imports it.
+
+=== model-server/serve.py
+--- detail
+GOAL
+Serve the model. Ollama, the program that loads model weights
+and generates text, runs inside a Modal container with 4 CPU
+cores. This file wraps it in a Modal class with one callable
+method, chat. The service has no web address: only code in the
+same Modal workspace, which means the gateway, can call it.
+
+THE PARTS WE NEED
+1. Constants: the models to install and the machine's size.
+2. image: a container image with Ollama, Python and the model
+   weights already downloaded.
+3. class Model with three methods:
+   - start(): runs when a container boots
+   - stop(): runs when it shuts down
+   - chat(...): handles one request
+
+WHERE THE DATA COMES FROM AND GOES
+- chat is invoked by gateway/main.py through
+  model.chat.remote.aio(...). Its arguments are the model name
+  from the registry, the caller's messages, and options the
+  gateway assembled.
+- Inside the container, chat talks to Ollama over HTTP on
+  127.0.0.1:11434, an address reachable only from within that
+  same container.
+- Its return value travels back to the gateway as a dictionary.
+
+HOW BILLING FOLLOWS FROM THIS FILE
+A container starts on the first call and stops 60 seconds after
+the last. Modal bills from start to stop. That idle minute, plus
+start and stop time, is what gateway/core.py estimates with
+idle_window_seconds and wake_overhead_seconds.
+
+@ 10-16 | Imports
+json, subprocess (to start Ollama), time, urllib (to talk to
+Ollama), and modal.
+
+@ 18-24 | Constants
+- MODELS = ["qwen2.5-coder:1.5b"]: what gets installed
+- CPU_CORES = 4: Modal counts physical cores; one equals two
+  vCPUs
+- MEMORY_MIB = 4096
+- SCALEDOWN_SECONDS = 60
+- OLLAMA_URL = http://127.0.0.1:11434, Ollama's default port
+The hardware numbers must match the "small" entry in
+gateway/core.py, or the ledger will misprice calls.
+
+@ 26-32 | The container image
+A recipe that Modal builds once and caches:
+1. Start from the public image ollama/ollama:latest and add
+   Python 3.12, which Modal needs in order to run our code.
+2. .entrypoint([]) clears the image's default start command, so
+   Modal controls what runs.
+3. Set OLLAMA_MODELS=/models: where weights are stored.
+4. .run_commands(...) executes at build time: start "ollama
+   serve" in the background, wait 5 seconds, then "ollama pull"
+   each model.
+Step 4 bakes roughly 1 GB of weights into the image. A cold
+start then only has to load them from local disk, not download
+them.
+
+@ 34-34 | The Modal app
+app = modal.App("agentdash-model"). The gateway finds the
+class by this name.
+
+@ 37-45 | class Model and its settings
+@app.cls(...) registers the class with Modal:
+- the image above
+- cpu=4, memory=4096
+- timeout=600: a single call may run up to 10 minutes
+- scaledown_window=60: stop the container after 60 idle seconds
+- max_containers=1: never run a second machine in parallel.
+  Extra calls queue behind the first, which caps the cost.
+
+@ 46-57 | start()
+@modal.enter() marks a method that runs once when a container
+starts, before any call is handled.
+1. subprocess.Popen(["ollama", "serve"]) launches the Ollama
+   server as a child process and returns immediately. Its
+   output is discarded. The handle is kept in self.server.
+2. Poll up to 60 times: request /api/version with a 2-second
+   timeout. If it answers, return. On OSError (not listening
+   yet), sleep 0.5 seconds and try again.
+3. If it never answers, raise RuntimeError. Modal then treats
+   the container as failed.
+
+@ 59-61 | stop()
+@modal.exit() marks a method that runs when the container is
+shutting down. It terminates the Ollama process.
+
+@ 63-71 | chat(...): signature
+@modal.method() makes this callable from other Modal code.
+CALLED BY: the /v1/chat handler in gateway/main.py.
+TAKES:
+- model: the Ollama model name
+- messages: the conversation
+- tools: optional tool definitions in Ollama's native format
+- options: Ollama settings; the gateway sends num_predict,
+  temperature and num_thread
+- response_format: "json", a JSON schema, or None
+RETURNS: a dictionary. Ollama's reply plus model_seconds, or
+         {"error": ...}.
+
+@ 72-78 | chat: guard
+1. If model is not in MODELS, return an error dictionary.
+   Otherwise Ollama would try to download an unknown model at
+   request time, which is slow and unplanned.
+
+@ 80-84 | chat: build Ollama's request body
+2. body = { model, messages, stream: False, options }.
+   stream False asks for the complete reply as one response
+   instead of token by token.
+3. Add "tools" only if some were given.
+4. Add "format" only if response_format was given. This is the
+   field that makes Ollama constrain generation to JSON or to a
+   schema; the agent's REPLY_SCHEMA ends up here.
+
+@ 85-89 | chat: the HTTP request object
+5. Build a POST to OLLAMA_URL + "/api/chat" with the body
+   encoded as JSON.
+
+@ 90-97 | chat: send and time it
+6. started = time.monotonic().
+7. urlopen with a 540-second timeout, kept under the
+   600-second function timeout so this code can return an
+   answer before Modal kills the call.
+8. Parse the response as JSON. On HTTPError, reply becomes
+   {"error": <Ollama's error text>}.
+9. Add model_seconds: the elapsed time rounded to 3 places.
+10. Return reply.
+On success the reply contains message (with the generated
+content), prompt_eval_count and eval_count (tokens in and out).
+The gateway copies those into the ledger.
+
+=== model-server/smoke_test.py
+--- detail
+GOAL
+Answer two questions before building anything else: is a
+1.5-billion-parameter model on 4 CPU cores fast enough to be
+usable, and does it produce tool calls? This was the first code
+written for the project (2026-10-12) and is kept as a record.
+serve.py is the lasting version of the same idea.
+
+THE PARTS WE NEED
+1. The same constants and image as serve.py, for one model.
+2. READ_FILE_TOOL: one tool definition in Ollama's format.
+3. _post(path, body): an HTTP POST to Ollama.
+4. _wait_for_server(): poll until Ollama is ready.
+5. _chat(label, messages, tools): run one prompt and measure it.
+6. run_prompts(): the function that runs on Modal.
+7. main(): runs on the PC and prints the result.
+(A leading underscore is a Python convention for "internal to
+this file".)
+
+HOW IT DIFFERS FROM serve.py
+It is started with "modal run", not "modal deploy". The app
+exists only for the duration of the command and nothing stays
+deployed, so billing ends when the function returns. The
+300-second timeout caps the cost if something hangs.
+
+WHAT IT FOUND
+The results are recorded in DESIGN.md. The tool-call result
+led to the larger experiment in research/experiments.py and to
+the decision to describe tools in our own prompt.
+
+@ 9-20 | Imports and constants
+The same standard-library imports as serve.py.
+MODEL, CPU_CORES = 4, MEMORY_MIB = 4096 and OLLAMA_URL.
+
+@ 22-30 | Image and app
+The same recipe as serve.py: Ollama's image, Python added, the
+model pulled at build time. The app is named
+"agentdash-model-smoke-test".
+
+@ 32-45 | READ_FILE_TOOL
+A dictionary in the function-calling format Ollama accepts:
+type "function", a name ("read_file"), a description, and a
+JSON schema for its parameters (one required string, "path").
+This tests Ollama's native tool channel, the approach later
+abandoned for this model.
+
+@ 48-58 | _post(path, body)
+TAKES:   an Ollama API path and a body dictionary.
+RETURNS: the parsed JSON reply, or {"error": ...}.
+Builds a JSON POST, sends it with a 240-second timeout, and
+converts an HTTPError into an error dictionary so the caller
+never has to catch anything.
+
+@ 61-68 | _wait_for_server()
+Polls /api/version every 0.5 seconds, up to 60 times. Returns
+as soon as it answers; raises RuntimeError if it never does.
+The same logic as Model.start in serve.py.
+
+@ 71-82 | _chat(label, messages, tools): send
+TAKES:   a label for the result, the messages, optional tools.
+RETURNS: a dictionary of measurements.
+1. body = the model, the messages, stream False, and options
+   num_predict 200 (cap the reply length) and temperature 0.
+2. Add tools if given.
+3. Time the call to _post("/api/chat", body) with
+   time.monotonic().
+
+@ 83-84 | _chat: on failure
+4. If the reply holds an error, return just the label, the
+   error and the wall time.
+
+@ 86-103 | _chat: extract the measurements
+Ollama reports durations in nanoseconds; dividing by 1e9 gives
+seconds.
+5. Return:
+   - wall_seconds: our own stopwatch
+   - load_seconds: time spent loading the model into memory
+   - prompt_tokens, and prompt tokens per second
+   - output_tokens, and output tokens per second
+   - content: the generated text
+   - tool_calls: Ollama's structured tool calls, or None
+   A rate is reported as None when its duration is 0, to avoid
+   dividing by zero.
+
+@ 106-111 | run_prompts(): start Ollama
+@app.function(...) declares the container: the image, 4 cores,
+4096 MiB, a 300-second timeout.
+1. Note the start time.
+2. Start "ollama serve" as a child process.
+3. Inside try: wait for it to be ready.
+
+@ 112-133 | run_prompts(): the two prompts
+4. "plain": ask for an iterative Fibonacci function, code only.
+   This measures raw generation speed.
+5. "tool_call": a system message telling the model to use its
+   tools, the question "What does the file src/config.ts
+   export?", and READ_FILE_TOOL on offer. A correct answer is a
+   read_file tool call, not prose.
+
+@ 134-142 | run_prompts(): clean up and return
+6. finally: terminate Ollama whether or not the prompts
+   succeeded.
+7. Return the model, the hardware, the total container seconds
+   and both results.
+
+@ 145-147 | main()
+@app.local_entrypoint() marks the function "modal run" executes
+on the PC. run_prompts.remote() runs that function on Modal and
+waits for its return value, which is then printed as JSON.

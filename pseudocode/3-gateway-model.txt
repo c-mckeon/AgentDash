@@ -1,0 +1,256 @@
+=== gateway/core.py
+The gateway's rules, with no cloud or web code in them: which models exist, what a call costs, when the budget is spent, how a run's pass is checked, and what a valid request looks like. Because it depends on nothing else, it can be tested on any machine.
+
+@ 1-23 | What this file is, and its fixed numbers
+Plain Python with no Modal or web imports, so it can be tested anywhere and moved later.
+Modal's prices: per CPU core per second, and per GiB of memory per second.
+The month's hard stop: $0.50.
+A reply may be at most 1,024 tokens, 512 if not specified.
+The allowed caller roles: worker, triage, supervisor, manual.
+
+@ 26-52 | What we record about a model
+for each model we keep:
+    its tier (small, later large), its name, who serves it
+    whether it runs on CPU or GPU
+    how many cores and how much memory its machine has
+    how many tokens it can hold
+    how long the machine stays up after a call (and is billed)
+    roughly how much extra time each wake-up is billed
+    how many threads it may use
+from those we can work out its price per second
+
+@ 55-70 | The model registry
+one entry so far, tier "small":
+    qwen2.5-coder:1.5b, served by Ollama on Modal, on CPU
+    4 cores, 4 GiB, 4,096 tokens
+    stays up 60 seconds after a call; about 30 seconds of overhead per wake
+callers ask for a tier, never a model name, so models can be swapped here
+
+@ 73-94 | Per-run passes
+to sign a pass: join the run id and expiry, add a signature made with the gateway key
+to check a pass:
+    it must have three parts
+    the signature must match one we compute ourselves
+    the expiry must be in the future
+    return the run id, or nothing
+(the orchestrator makes passes in TypeScript; both sides must agree)
+
+@ 97-102 | Month and cost
+the month key is the year and month, like 2026-10
+cost = seconds × the model's price per second
+
+@ 105-116 | Idle time we are billed for
+the machine stays up for a while after each call, and that time is billed
+to work out the idle time before a call:
+    first call ever: none
+    the next call came within the window: the whole gap
+    the next call came later: the machine shut down, so the full window plus the wake overhead
+
+@ 119-142 | The budget
+effective spend = the larger of our own ledger and Modal's meter
+    (Modal's meter is the truth but lags; ours is immediate but an estimate)
+budget status: spent, limit, remaining, and whether it is exhausted
+budget view: the same, showing both figures behind it
+
+@ 145-180 | Totals from the ledger
+total spent: add up the cost of every record
+summarise: totals overall and per role
+    calls, cost, billed seconds, idle seconds, tokens in and out
+
+@ 183-235 | Check a chat request
+a request must be an object, and:
+    tier must be one we know (default small)
+    messages must be a non-empty list, each with a valid role and text
+    tools, if given, must be a list
+    role must be one of the four (default manual)
+    run_id, if given, must be short text
+    max_tokens must be a positive whole number (capped at 1,024)
+    temperature must be between 0 and 2
+    response_format, if given, must be "json" or a schema
+return the cleaned request, or the reason it was refused
+
+@ 238-243 | When did this model last finish a call?
+look backwards through the ledger for the latest record of this tier that has an end time
+
+@ 246-276 | Build one ledger line
+for one model call, record:
+    when, which run, which role, which model and hardware
+    seconds billed for the call, and idle seconds before it
+    the model's own time and token counts
+    the cost of call time plus idle time
+    any error
+
+=== gateway/main.py
+The gateway as a running web service on Modal: the one public address through which every model request passes. It checks who is calling, refuses once the budget is spent, forwards to the model, and writes a ledger line. The rules themselves live in core.py.
+
+@ 1-21 | What this file is
+The only public door to the models.
+Deployed with: py -m modal deploy gateway/main.py
+Rules live in core.py; this file is the web and Modal wiring.
+
+@ 23-35 | What it runs on
+a small Linux image with Python, the FastAPI web library, and core.py copied in
+a Modal volume (a persistent disk) called agentdash-ledger for the ledger
+the Modal app is called agentdash-gateway
+
+@ 38-47 | The ledger file
+one file per month, one JSON record per line
+read_ledger: read every line of this month's file
+append_ledger: add one line to it
+
+@ 50-63 | How Modal runs it
+a quarter of a core and 256 MB: it only passes messages along
+it is given the gateway key as a secret, and the ledger disk
+it shuts down after 60 idle seconds
+exactly one copy runs, handling up to 20 requests at once
+
+@ 64-74 | Set up when the service starts
+create the web app
+get a handle to the model service (not reachable from the internet)
+create a lock, so only one request at a time checks the budget and writes the ledger
+keep a small cache of Modal's own spend figure
+
+@ 76-90 | Ask Modal what has really been spent
+if we asked less than 60 seconds ago, reuse the answer
+otherwise ask Modal's billing for this month's metered cost
+if that fails, keep the last known figure and note the error
+
+@ 92-103 | Who is calling?
+authorised: does the request carry the owner key?
+run_from_pass: does it carry a valid per-run pass, and for which run?
+denied: the standard "unauthorised" reply
+
+@ 105-113 | /health and /v1/models
+GET /health: reply ok, no key needed
+GET /v1/models: owner only; list the registry with prices
+
+@ 115-127 | /v1/usage
+GET /v1/usage: owner only
+    read this month's ledger
+    reply with the budget, a summary by role, and the last 20 records
+
+@ 129-146 | /v1/chat: check the caller and the request
+the owner key may call as any role
+a run pass may only call as that run's worker
+neither: refuse
+body not JSON, or fails the checks in core.py: refuse with the reason
+if a pass was used, force the run id and the role "worker"
+look up the model for the requested tier
+
+@ 148-156 | /v1/chat: the hard stop
+holding the lock:
+    read the ledger and Modal's meter
+    if the budget is exhausted: refuse with 402 and send nothing to the model
+
+@ 158-180 | /v1/chat: call the model
+    work out the billed idle time since the last call
+    start a timer
+    call the model service with the messages and settings
+    if that fails, treat the failure as the reply
+    stop the timer: that is the billed time, including any wait to start up
+
+@ 182-193 | /v1/chat: write the ledger
+    build the ledger record and append it
+    save the disk
+    recompute the budget with this call included
+release the lock
+
+@ 195-219 | /v1/chat: reply
+gather the usage figures for this call
+if the model failed: reply 502 with the error, usage and budget
+otherwise reply with the model's message, usage and budget
+
+=== gateway/try_it.py
+A small command-line helper for the owner: send one prompt through the deployed gateway, or print the month's usage.
+
+@ 1-13 | What this file is
+py gateway/try_it.py "a prompt"     send one prompt
+py gateway/try_it.py --usage        show the month's usage
+reads the gateway address and key from .env
+
+@ 16-22 | Read .env
+for each line of .env that has "=" and is not a comment: split it into a name and a value
+
+@ 25-35 | Call the gateway
+to call a path on the gateway:
+    send the request with the owner key
+    return the status and the reply
+    an error status is returned the same way, not raised
+
+@ 38-55 | The command
+no argument: print the instructions and exit
+--usage: call /v1/usage
+anything else: send it as a prompt to /v1/chat with role "manual", at most 200 tokens
+print the status and the reply
+
+=== model-server/serve.py
+The model service: Ollama running the model on a Modal CPU machine. It has no public address; only the gateway can call it. A machine starts when a call arrives and shuts down a minute after the last one.
+
+@ 1-24 | What this file is, and its settings
+Deployed with: py -m modal deploy model-server/serve.py
+one model installed: qwen2.5-coder:1.5b
+4 cores, 4 GiB of memory
+shuts down after 60 seconds without a call
+(these must match what gateway/core.py records, because the gateway prices calls from them)
+
+@ 26-34 | The machine image
+start from Ollama's official image and add Python
+download the model while building the image, so starting a machine does not have to
+the Modal app is called agentdash-model
+
+@ 37-45 | How Modal runs it
+4 cores, 4 GiB, calls limited to 10 minutes
+at most one machine at a time
+
+@ 46-61 | Starting and stopping
+when a machine starts:
+    start the Ollama server in the background
+    ask it for its version every half second, up to 30 seconds, until it answers
+    fail if it never does
+when the machine stops: stop the Ollama server
+
+@ 63-78 | chat: one request
+takes: the model name, the messages, optional tools, options and reply format
+if the model is not installed here: return an error
+
+@ 80-97 | chat: forward to Ollama
+build the request for Ollama's /api/chat (no streaming)
+add tools and the reply format if given
+send it and time it
+return Ollama's reply plus how long it took
+an error from Ollama is returned as the reply, not raised
+
+=== model-server/smoke_test.py
+The very first experiment, kept for the record: run the model on a CPU machine once and time two prompts, one plain and one offering a tool. Nothing stays deployed afterwards.
+
+@ 1-20 | What this file is
+Run with: py -m modal run model-server/smoke_test.py
+runs once and disappears; a 5-minute limit caps the cost
+same model and machine size as the real service
+
+@ 22-30 | The machine image
+Ollama's image plus Python, with the model downloaded in advance
+
+@ 32-45 | A tool to offer
+a description of read_file in the format Ollama expects for tools
+
+@ 48-68 | Talking to Ollama
+_post: send a request to Ollama and return the reply, or its error
+_wait_for_server: ask for the version until Ollama answers, up to 30 seconds
+
+@ 71-103 | One timed prompt
+send the messages (and tools, if any), at most 200 tokens, no randomness
+time the whole call
+return: seconds taken, time to load the model, tokens in and out, tokens per second,
+        the reply text, and any tool calls
+
+@ 106-142 | The test itself
+on a Modal machine:
+    start Ollama and wait for it
+    prompt 1: write a Fibonacci function (plain text)
+    prompt 2: a question that needs the read_file tool
+    stop Ollama
+    return both results and the total time
+
+@ 145-147 | Run it from the PC
+call the function on Modal and print what comes back
