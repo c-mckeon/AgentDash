@@ -225,3 +225,43 @@ table.cost { min-width: 0; }
   :root:not([data-theme="light"]) .status.bad, :root:not([data-theme="light"]) .diff .del { color: #ff8a7a; }
 }
 :root[data-theme="dark"] .status.bad, :root[data-theme="dark"] .diff .del { color: #ff8a7a; }
+
+/* ---- pseudocode tab */
+main[data-tab="pseudocode"] { max-width: 1500px; }
+.code-tree { max-height: 300px; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+.code-tree ul { list-style: none; margin: 0; padding-left: 18px; }
+.code-tree > ul { padding-left: 0; }
+.code-tree li { margin: 0; }
+.code-tree summary { cursor: pointer; padding: 2px 0; font-weight: 600; }
+.code-tree button.file {
+  background: none; border: 0; padding: 2px 6px; margin-left: 12px; border-radius: 4px; cursor: pointer;
+  color: var(--text); font: 0.9rem ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+.code-tree button.file:hover { background: var(--code-bg); }
+.code-tree button.file[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.code-detail { scroll-margin-top: 8px; }
+.code-head h2 { font: 600 1.05rem ui-monospace, "Cascadia Code", Consolas, monospace; margin-top: 20px; }
+.code-columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; }
+.code-columns h3 { margin-top: 8px; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.pseudo-pane, .code-pane { height: calc(100vh - 90px); min-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.pseudo-pane { position: relative; padding: 8px; }
+.chunk {
+  display: block; width: 100%; text-align: left; cursor: pointer; margin-bottom: 8px; padding: 10px 12px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 8px; font: inherit;
+}
+.chunk:hover { border-left-color: var(--accent); }
+.chunk[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.chunk-title { display: block; font-weight: 600; }
+.chunk-lines { display: block; color: var(--muted); font-size: 0.78rem; margin-bottom: 6px; }
+.chunk-text { display: block; white-space: pre-wrap; font: 0.84rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.code-pane { position: relative; font: 0.8rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.code-lines { min-width: max-content; padding: 6px 0; }
+.line { display: flex; cursor: pointer; }
+.line .n { flex: none; width: 3.6em; padding-right: 12px; text-align: right; color: var(--later); user-select: none; }
+.line .t { white-space: pre; padding-right: 16px; }
+.line.lit { background: var(--accent-soft); box-shadow: inset 4px 0 0 var(--accent); }
+@media (max-width: 900px) {
+  .code-columns { grid-template-columns: minmax(0, 1fr); }
+  .pseudo-pane, .code-pane { height: 60vh; }
+}
+.code-tree button.file.bare { color: var(--later); }

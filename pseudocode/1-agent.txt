@@ -1,0 +1,247 @@
+=== agent/main.ts
+The program that starts inside the sandbox. It reads its orders, connects the loop to the gateway and to the tools, and prints every event as a line of text for the orchestrator to collect.
+
+@ 1-10 | What this file is
+This is the agent's front door.
+It pulls in the loop, the tools, and the reply format from the other agent files.
+
+@ 12-16 | Read the orders
+read from the environment:
+    GATEWAY_URL   where to send model requests
+    RUN_PASS      the short-lived pass for this one run
+    TASK          what the owner asked for
+    REPO_DIR      where the cloned repository is
+    MAX_STEPS     how many model calls are allowed
+if any of the first four is missing:
+    print a "finished: agent started without its settings" event
+    exit with an error
+
+@ 18-32 | How to ask the model
+to chat(messages):
+    send the messages to the gateway at /v1/chat
+        show the run pass as proof of who is asking
+        demand a reply that matches the tool-call format
+        allow at most 400 tokens of reply, with no randomness
+        give up after 3 minutes
+    if the gateway says no:
+        return "failed" with its status (402 means the budget is spent)
+    otherwise return the model's text and the usage figures
+    if the network itself fails, return "failed" with the reason
+
+@ 34-39 | Start the loop
+run the agent loop on TASK, giving it:
+    chat       the function above
+    runTool    the real tools, confined to REPO_DIR
+    emit       print each event as one JSON line
+    maxSteps   MAX_STEPS, or 8 if not given
+
+=== agent/loop.ts
+The agent loop itself: ask the model what to do, do it, show the model what happened, and repeat until it finishes or a stopping rule fires.
+
+@ 1-11 | What this file is
+The loop is handed everything it needs (a way to chat, a way to run tools, a way to report).
+It never touches the network or files itself, which is why it can be tested without a model.
+
+@ 13-36 | The shapes of things
+a chat result is either:
+    ok, with the model's text and usage figures
+    not ok, with a status and an error
+a run can stop for one of six reasons:
+    finished, max_steps, stuck, parse_errors, budget_exhausted, model_error
+an event has a type (model, tool_call, tool_result, parse_error, finished) and a step number
+the loop needs: chat, runTool, emit, maxSteps
+the outcome is: the reason, how many steps, and an optional summary
+
+@ 38-41 | Two patience limits
+give up after the same call 3 times in a row
+give up after 3 unreadable replies in a row
+
+@ 43-55 | Set up the conversation
+start the conversation with two messages:
+    the instructions and tool list
+    "Task: <the task>"
+remember the last call made, how often it has repeated, and how many replies were unreadable
+to stop(step, reason, summary):
+    report a "finished" event
+    return the outcome
+
+@ 57-63 | Ask the model
+for each step, up to maxSteps:
+    trim the conversation to fit the model's memory, and send it
+    if the request failed:
+        stop with "budget_exhausted" if the gateway said 402, otherwise "model_error"
+    report the model's reply
+    add the reply to the conversation
+
+@ 65-75 | Understand the reply
+    try to read the reply as a tool call
+    if it cannot be read:
+        report a parse error
+        if that is the third in a row, stop with "parse_errors"
+        tell the model what was wrong and show it an example
+        go round again
+    otherwise reset the unreadable-reply count
+
+@ 77-84 | Finish, or notice a rut
+    report the tool call
+    if the tool is "finish": stop with "finished" and the model's summary
+    if this exact call is the same as the last one, count a repeat; otherwise start counting again
+    if it has now been made 3 times in a row: stop with "stuck"
+
+@ 86-90 | Do it and report back
+    run the tool
+    report its result
+    add "Tool result: ..." to the conversation
+if the loop runs out of steps: stop with "max_steps"
+
+=== agent/protocol.ts
+The language the agent and the model speak: which tools exist, the instructions sent to the model, and a forgiving reader for what the model sends back.
+
+@ 1-13 | What this file is
+Our research found this model ignores Ollama's own tool feature.
+So the tools are described in our prompt, and the reply is forced to be JSON.
+A tool is described by a sentence and its named arguments.
+
+@ 15-35 | The seven tools
+read_file(path)                       read a file
+write_file(path, content)             create a file, or replace all of one
+append_file(path, content)            add to the end, keeping the rest
+replace_in_file(path, find, replace)  change one exact piece, keeping the rest
+search_files(pattern)                 search every file for some text
+run_shell(command)                    run a command
+finish(summary)                       say the task is done
+(append and replace were added after the model wiped a file while trying to add one line)
+
+@ 37-47 | The required shape of a reply
+a tool call is a tool name plus named arguments
+every reply must be: {"tool": one of the seven names, "args": {...}}
+(the gateway passes this rule to Ollama, which enforces it)
+
+@ 49-60 | The instructions
+to build the system prompt:
+    list each tool as "name(arguments): what it does"
+    say: you are a coding agent, you act only by calling tools, one per reply
+    say: look at files before changing them, and call finish when done
+    show the exact reply format and one example
+
+@ 62-86 | Dig a JSON object out of surrounding text
+to find the first JSON object in some text:
+    for each "{" in the text:
+        walk forward, counting braces in and out
+            ignore braces that sit inside quoted strings
+        when the count returns to zero:
+            try to read that slice as JSON
+            if it reads, return it; if not, try the next "{"
+    return nothing if none worked
+
+@ 88-94 | Two small helpers
+is this a plain object (not a list, not empty)?
+if a value arrives wrapped as {"type": ..., "value": x}, unwrap it to x
+
+@ 96-108 | Read a reply: find the tool
+to read a reply:
+    try the whole text as JSON
+    failing that, dig out the first JSON object
+    if there is none: error "no JSON object"
+    take the tool name from "tool" (or "name", a common slip)
+    if it is not one of the seven: error, listing the real tools
+
+@ 110-121 | Read a reply: find the arguments
+    look for arguments under "args", "arguments" or "parameters"
+    if none is there, look at the top level of the reply
+    for each argument this tool needs:
+        unwrap it if it was wrapped
+        accept text; turn numbers and true/false into text
+        anything else: error naming the missing argument
+    return the tool call
+
+=== agent/context.ts
+Keeps every request small enough for the model to read. The model can hold 4,096 tokens and silently forgets the start of anything longer, which is exactly where the task is.
+
+@ 1-12 | What this file is
+The model drops the beginning of an over-long prompt without any error.
+So the agent measures its own messages and trims old steps before sending.
+A message has a role (system, user or assistant) and its text.
+
+@ 14-19 | The budget
+the model's window is 4,096 tokens
+reserve 400 for the reply and 300 as a safety margin
+so a prompt may use 3,396
+when steps are removed, leave a note saying so
+
+@ 21-27 | Estimate size
+tokens in a text is roughly its characters divided by 3 (measured at 3.04, rounded to be safe)
+total for a conversation = sum of each message's estimate, plus 4 per message
+
+@ 29-44 | Drop the oldest steps
+to fit a conversation into the budget:
+    the first two messages (instructions and task) are never removed
+    everything after them is a step: a reply and its result
+    while the total is over budget and more than one step remains:
+        remove the oldest reply and its result together
+        remember that something was removed, so the note is included
+
+@ 45-54 | Last resort: shorten one huge step
+    while still over budget:
+        find the longest remaining step
+        if it is already short, stop trying
+        cut it in half and mark it "[cut to fit]"
+    return what is left
+
+=== agent/tools.ts
+What each tool actually does inside the sandbox. File tools are locked to the repository folder, and all output is kept short because the model has to read it.
+
+@ 1-11 | What this file is
+Uses Node's own file and process functions.
+A tool result is: did it work, and some text for the model.
+
+@ 13-19 | Keep output short
+results are limited to 1,500 characters
+a shell command may run for 30 seconds
+to clip a text: if it is too long, cut it and say how long it really was
+
+@ 21-26 | Stay inside the repository
+to check a path:
+    work out where it really points
+    allow it only if that is the repository folder or something inside it
+    otherwise refuse (this stops "../../etc/passwd")
+
+@ 28-35 | Run a program
+to run a program with arguments in a folder:
+    start it with a 30-second limit and a cap on output size
+    return its exit code, its output and its error text
+    if it was stopped for taking too long, say so
+
+@ 37-48 | read_file and write_file
+to run a tool call:
+    for any of the four file tools:
+        check the path stays inside the repository; refuse if not
+        read_file: return the file's text, clipped
+        write_file: create any missing folders, write the full text, report how much was written
+
+@ 49-56 | append_file
+        read the file as it is now
+        append_file:
+            start the new text on a fresh line
+            make sure the file ends with a line break
+            write old text + new text
+
+@ 57-64 | replace_in_file
+        replace_in_file:
+            count how often the "find" text appears
+            if never: error telling the model to read the file and copy the text exactly
+            replace the first occurrence
+            mention it if there were more
+
+@ 65-70 | search_files
+    search_files:
+        run ripgrep for the pattern, at most 5 matches per file
+        no matches is a normal answer, not an error
+
+@ 71-80 | run_shell, and anything unexpected
+    run_shell:
+        run the command with sh
+        return its exit code, output and errors
+        it counts as ok only if the exit code is 0
+    unknown tool: error
+    if anything above throws, return the error as a normal failed result

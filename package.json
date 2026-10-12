@@ -8,7 +8,8 @@
   "scripts": {
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "sandbox:try": "node sandbox-provider/try-it.ts"
+    "sandbox:try": "node sandbox-provider/try-it.ts",
+    "pseudocode": "node tools/build-pseudocode.ts"
   },
   "dependencies": {
     "modal": "^0.11.0"

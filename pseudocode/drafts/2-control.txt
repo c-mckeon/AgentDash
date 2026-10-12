@@ -1,0 +1,442 @@
+=== config.ts
+The one place where settings are read from the environment. Everything else is handed a finished Config and never looks at the environment itself.
+
+@ 1-19 | The settings
+a Config holds:
+    gatewayUrl                  where the gateway lives
+    gatewayKey                  the owner key; also signs the per-run passes
+    ownerToken                  needed to start or kill a run through the API
+    dbPath, port                where the database file is, and which port the API uses
+    runTokenTtlSeconds          how long a run's pass stays valid
+    sandboxMaxLifetimeSeconds   Modal destroys the sandbox after this long regardless
+    agentMaxSteps               the agent's limit on model calls
+    agentTimeoutSeconds         the agent's limit on time
+
+@ 21-25 | Check the required three
+GATEWAY_URL, GATEWAY_KEY and OWNER_TOKEN must be set
+if any are missing, stop and name all of them at once
+
+@ 26-37 | Fill in defaults
+return the Config:
+    gateway address with any trailing slash removed
+    database file "agentdash.db" unless told otherwise
+    port 8787
+    passes valid for 900 seconds
+    sandboxes live at most 600 seconds
+    agent: 8 steps, 300 seconds
+
+=== api/main.ts
+Starts the real API on this machine, wired to a real database file and real Modal sandboxes.
+
+@ 1-11 | Gather the parts
+load .env
+read the settings
+open the database
+connect to Modal for sandboxes
+
+@ 13-20 | Start listening
+create the API with:
+    the database
+    the owner's token
+    "start a run" = hand it to the orchestrator and do not wait for it
+listen on the configured port
+
+=== api/server.ts
+The web interface to the system. Anyone may read runs and their events; only the owner may start or kill one.
+
+@ 1-24 | What this file is
+Plain Node HTTP, no framework.
+Limits:
+    repositories must be public GitHub addresses, so a sandbox never needs a password
+    a task may be at most 4,000 characters
+    a request body may be at most 64 KB
+The API needs: the database, the owner's token, and a way to start a run.
+
+@ 26-35 | Check a new run request
+to validate a new run:
+    it must be an object
+    task must be non-empty text, not too long
+    repoUrl must look like https://github.com/owner/name
+    return the cleaned task and repoUrl, or a sentence saying what is wrong
+
+@ 37-41 | Is this the owner?
+compare the token in the request with the owner's token
+    (compared in constant time, so timing cannot leak it)
+
+@ 43-57 | Read and write JSON
+to read a request body: collect it piece by piece, refusing anything over 64 KB, then parse it
+to send a reply: set the status, mark it as JSON, write it
+
+@ 59-69 | Route the request
+for every request:
+    split the address into: root / run id / action
+    GET /health: reply ok
+    anything not under /runs: 404
+
+@ 71-89 | /runs: list or start
+    with no run id:
+        GET: reply with the list of runs
+        POST:
+            not the owner: 401
+            body is not JSON: 400
+            fails validation: 400 with the reason
+            create the run with a random id, status "queued"
+            record a "queued" event
+            hand the run to the orchestrator
+            reply 201 with the run
+        anything else: 405
+
+@ 91-100 | /runs/:id: read a run or its events
+    look up the run; 404 if it does not exist
+    GET /runs/:id: reply with the run and its model choices
+    GET /runs/:id/events?after=N: reply with events newer than N
+        (this is how a dashboard would follow a run live)
+
+@ 101-107 | /runs/:id/kill
+    POST /runs/:id/kill:
+        not the owner: 401
+        run already ended: 409
+        mark the run "kill requested" and record the event
+        reply 202 (accepted; the orchestrator does the actual stopping)
+
+@ 108-113 | Anything else
+    unknown action: 404
+    if anything throws: 500 with the message
+
+=== db/index.ts
+Everything that touches stored data. It uses SQLite, a database that is a single file. The rest of the system calls only these functions, so swapping the database later means rewriting this file alone.
+
+@ 1-11 | What this file is
+Uses the SQLite driver built into Node: no account, no cost.
+Borrows the lifecycle rules from orchestrator/state.ts.
+
+@ 13-43 | The three tables
+runs: one row per run
+    id, task, repository, status, kill-requested flag,
+    patch, error, sandbox seconds and cost, created and updated times
+events: one row per thing that happened in a run, numbered in order
+    run id, time, type, data
+model_assignments: one row each time a model is chosen for a run
+    run id, time, tier, who decided, why
+
+@ 45-73 | The same things as TypeScript shapes
+Run, RunEvent and ModelAssignment describe a row from each table in the form the rest of the code uses.
+
+@ 75-97 | Convert database rows
+database columns are named like repo_url; the code uses repoUrl
+toRun and toEvent do that renaming, and turn stored JSON text back into data
+
+@ 99-111 | Open the database
+on creation:
+    open the file (or an in-memory database for tests)
+    create the tables if they are not there
+    keep a clock, so tests can control the time
+
+@ 113-128 | Create and read runs
+createRun: insert a row with status "queued", return it
+getRun: fetch one run by id, or nothing
+listRuns: the newest 50 runs
+
+@ 130-139 | Change a run's status
+setStatus:
+    fetch the run; fail if it does not exist
+    ask the lifecycle rules whether this move is allowed; fail if not
+    store the new status, any error, and the time
+
+@ 141-153 | Flags and results
+requestKill: set the kill-requested flag
+savePatch: store the patch
+saveSandboxUsage: store how long the sandbox lived and what it cost
+
+@ 155-169 | Events
+appendEvent: add an event to a run, return it with its number
+listEvents: a run's events in order; given a number, only the ones after it
+
+@ 171-193 | Model choices, and closing
+addAssignment: record which model tier was chosen, by whom and why
+listAssignments: a run's model choices in order
+close: close the database
+
+=== orchestrator/state.ts
+The rules for a run's lifecycle: which status can follow which. Pure rules with no side effects.
+
+@ 1-14 | The eight statuses
+queued, triaging, running, reviewing, done
+failed, killed, budget_stopped
+
+@ 16-24 | The allowed moves
+the normal path: queued → triaging → running → reviewing → done
+a run that is still going may also end early as failed, killed or budget_stopped
+
+@ 26-37 | The checks
+is a status final? yes, if it has no next step on the normal path
+can a run go from A to B?
+    never, if A is final
+    yes, if B is the next normal step, or B is an early ending
+assertTransition: the same check, but it throws an error on "no"
+
+=== orchestrator/tokens.ts
+Makes and checks per-run passes for the gateway. A pass lets one run talk to the model for a short time, so the sandbox never holds the real key.
+
+@ 1-13 | What a pass is
+a pass looks like: <run id>.<expiry time>.<signature>
+the signature is a fingerprint of "<run id>.<expiry>" made with the gateway key (HMAC-SHA256)
+only someone holding the key can produce a matching signature
+gateway/core.py does the same in Python; the two must agree
+
+@ 15-18 | Sign a pass
+to sign: join the run id and expiry, compute the signature, append it
+
+@ 20-30 | Check a pass
+to verify:
+    it must have exactly three parts
+    recompute the signature from the first two parts
+    it must equal the one given (compared in constant time)
+    the expiry must be a number in the future
+    return the run id, or nothing
+
+=== orchestrator/run.ts
+Carries one run from start to finish: moves it through its statuses, creates the sandbox, clones the repository, runs the agent, saves the patch, honours the kill switch, and always destroys the sandbox.
+
+@ 1-31 | What this file is
+The router (step 6) and supervisor (step 7) are not built, so those stages are passed through and say so.
+Fixed places inside the sandbox: the repository in /workspace/repo, the agent in /agent.
+The kill switch is checked once a second.
+Two special errors: Killed (the owner asked to stop) and BudgetStopped (the month's money is spent).
+
+@ 33-41 | Put the agent in the sandbox
+to install the agent:
+    make the /agent folder in the sandbox
+    copy every .ts file from our agent folder into it
+    return how many files were copied
+
+@ 43-55 | Small helpers for this run
+move(status): store the new status and record it as an event
+killRequested: has the owner asked to stop this run?
+checkKill: if so, throw Killed
+
+@ 56-63 | Save the patch
+to capture the patch (only if a repository was cloned):
+    tell git to notice brand-new files
+    ask git for the difference from the original
+    store it, and record how big it was
+
+@ 65-89 | Start the agent
+to run the agent:
+    work out when its pass should expire
+    start "node /agent/main.ts" in the repository folder, with a time limit, giving it:
+        the gateway address
+        a freshly signed pass for this run only
+        the task, the repository folder, the step limit
+    for each line the agent prints:
+        if it is an event, store it as "agent_<type>"
+            if it is the "finished" event, remember the reason
+        if it is not JSON, store it as raw output
+
+@ 90-109 | Watch for a kill while it works
+    alongside the agent, check the kill switch every second
+    wait for whichever comes first: the agent ending, or a kill
+    if the agent ran out of time: reason = "timeout"
+    if it crashed without explanation: store the end of its error output
+    stop watching
+    return the reason
+
+@ 111-119 | Stage 1: triage
+fetch the run; fail if it does not exist
+status → triaging
+choose the "small" model by default (no router yet) and record why
+check the kill switch
+
+@ 121-128 | Stage 2: create the sandbox
+status → running
+create a sandbox tagged with the run id and a maximum lifetime
+record its id and how long creation took
+check the kill switch
+
+@ 130-141 | Clone the repository
+run "git clone --depth 1 <repository>" in the sandbox, 2-minute limit
+record the command and its result
+if it failed, fail the run
+check the kill switch
+
+@ 143-147 | Run the agent and keep its work
+install the agent and record it
+run the agent
+capture the patch
+if the gateway refused for budget: throw BudgetStopped
+if the agent did not finish properly: fail with the reason
+
+@ 149-151 | Stage 3: review
+status → reviewing
+record that the review was skipped (no supervisor yet)
+status → done
+
+@ 152-161 | If something went wrong
+Killed: try to save whatever patch exists, status → killed
+BudgetStopped: status → budget_stopped
+anything else: status → failed, with the message
+
+@ 162-169 | Always clean up
+whatever happened, if a sandbox exists:
+    destroy it
+    store how long it lived and what it cost
+    record the event
+
+=== orchestrator/try-it.ts
+A live end-to-end check you run by hand. It starts the API, sends real tasks through real sandboxes and the real model, and prints the results. It can also save the runs for the dashboard preview.
+
+@ 1-24 | What this file is
+Costs a cent or two per use.
+The test repository is GitHub's public "Hello-World".
+Three default tasks: create a file, add a line to a file, write and run a small script.
+
+@ 26-37 | Start a private copy of the system
+load settings
+use a database that lives only in memory
+start the API on any free port
+prepare the owner's credentials for requests
+
+@ 39-46 | Start one run
+to run a task to its end:
+    ask the API to start a run
+    if asked to, wait a moment and then send a kill request
+
+@ 47-74 | Wait, then summarise
+    every half second, ask the API for the run's state
+    once it has ended and the sandbox is accounted for:
+        fetch all its events
+        add up the model's calls, seconds, tokens and cost
+        return a summary: status, timings, costs, parse errors, the steps taken, the patch
+
+@ 76-83 | Decide what to run
+if a task was given on the command line, run just that
+otherwise run the three default tasks
+unless exporting, also run one more and kill it after 6 seconds, to test the kill switch
+
+@ 85-93 | Export for the dashboard
+if --export <file> was given:
+    ask the gateway for the month's budget figures
+    write every run, its model choices and all its events to the file
+
+@ 95-98 | Finish
+print the summaries (without the patches)
+shut down the API, the database and the Modal connection
+
+=== sandbox/image.ts
+The recipe for the disposable computer every run gets.
+
+@ 1-15 | What is installed
+start from a small Linux image with Node 22 (the agent is TypeScript)
+install git (to clone and to make the patch), ripgrep (for search), curl, and certificates
+create /workspace and start there
+
+=== sandbox-provider/types.ts
+The contract between the orchestrator and whatever service supplies sandboxes. The rest of the system uses only these shapes, so the vendor can change without anything else changing.
+
+@ 1-19 | Asking for a sandbox
+a provider can: create a sandbox
+when creating, say:
+    runId, so a stray sandbox can be traced
+    optionally its size
+    optionally a maximum lifetime, enforced by the vendor
+
+@ 21-29 | What a sandbox can do
+a sandbox has an id and a size, and can:
+    exec        run a command
+    writeFile   create or overwrite a text file
+    destroy     stop, and report lifetime and rough cost
+
+@ 31-54 | Options and results
+when running a command you may give: a folder, a time limit, extra environment variables,
+    and a function to call with each line of output as it appears
+a result holds: output, error text, exit code, seconds taken, and whether it was cut off
+a destroy report holds: seconds lived and estimated cost
+
+=== sandbox-provider/pricing.ts
+Works out what a sandbox costs from Modal's published rates.
+
+@ 1-11 | Rates and default size
+CPU: $0.1419 per core per hour
+memory: $0.024 per GiB per hour
+default sandbox: 1 core, 1 GiB
+
+@ 13-23 | The sums
+cost per second = cores × CPU rate + GiB × memory rate
+cost = seconds × cost per second (never negative)
+
+=== sandbox-provider/modal.ts
+The Modal version of the sandbox contract: how a sandbox is really created, used and destroyed.
+
+@ 1-22 | What this file is
+Uses Modal's JavaScript library.
+Sandboxes are grouped under the Modal app "agentdash-sandboxes".
+Defaults: 10-minute lifetime, 60-second command limit.
+Exit code 124 means "timed out"; 137 means "killed".
+
+@ 24-51 | Create a sandbox
+to create:
+    note the start time
+    find (or create) the Modal app
+    build the image from the recipe in sandbox/image.ts
+    create the sandbox with:
+        the chosen cores, and a hard limit at the same number
+            (Modal bills CPU used above the reservation, so capping keeps the price predictable)
+        the chosen memory
+        a maximum lifetime
+        a tag with the run id
+    return a handle to it
+
+@ 53-66 | The handle
+the handle remembers the Modal sandbox, its size, and when it started
+
+@ 68-76 | Run a command: start it
+to exec a command:
+    note the start time
+    start the command in the sandbox with its folder, time limit and environment
+
+@ 77-95 | Run a command: collect its output
+    to read the output:
+        if nobody wants live lines, just read it all
+        otherwise read it piece by piece, and each time a full line is complete, hand it over
+    wait for three things together: the output, the error text, and the exit code
+
+@ 96-109 | Run a command: one way a timeout shows up
+    if any of the three failed:
+        if the time limit had not been reached, it is a real error: throw it
+        otherwise it was a timeout: return exit code 124, timedOut = true
+
+@ 110-120 | Run a command: the other way
+    if the exit code is 137 and the time limit was reached: also a timeout
+        report it as 124, timedOut = true
+    otherwise return the output and the real exit code
+
+@ 122-136 | Write a file, destroy, check
+writeFile: write text to a path in the sandbox
+destroy: terminate the sandbox, return how long it lived and the estimated cost
+poll: nothing while running; the exit code once stopped
+
+=== sandbox-provider/try-it.ts
+A live check of the sandbox provider on its own. Creates one sandbox, uses it the way a run would, and destroys it.
+
+@ 1-18 | Create a sandbox
+Costs well under a cent.
+create a sandbox with a 5-minute lifetime
+record how long creation took
+
+@ 20-31 | A helper to run and record a step
+to run a named step: run the command, and record its exit code, time, and the start of its output
+
+@ 33-41 | The steps
+echo a message
+check git, ripgrep and node are installed
+clone the test repository
+edit a file
+get the patch with git diff
+reach the gateway's /health address
+run a command that fails on purpose
+run a command that times out on purpose
+check the sandbox still works afterwards
+
+@ 42-51 | Clean up and report
+always: destroy the sandbox, wait 3 seconds, confirm it has really stopped
+print the report

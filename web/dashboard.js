@@ -4,7 +4,7 @@
 
 // ---------------------------------------------------------------- tabs
 
-const TABS = ["dashboard", "architecture", "research"];
+const TABS = ["dashboard", "architecture", "research", "pseudocode"];
 
 function showTab(wanted) {
   const tab = TABS.includes(wanted) ? wanted : "dashboard";
@@ -15,6 +15,9 @@ function showTab(wanted) {
     else link.removeAttribute("aria-current");
   }
   document.title = `AgentDash ${tab[0].toUpperCase()}${tab.slice(1)}`;
+  // Lets the stylesheet widen the page for a tab, and other scripts load on demand.
+  document.querySelector("main").dataset.tab = tab;
+  document.dispatchEvent(new CustomEvent("tabshown", { detail: tab }));
 }
 
 // Switching tabs never changes the address: any link to a tab is handled here
