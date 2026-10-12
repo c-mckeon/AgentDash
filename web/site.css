@@ -228,9 +228,10 @@ table.cost { min-width: 0; }
 
 /* ---- pseudocode tab */
 main[data-tab="pseudocode"] { max-width: 1500px; }
-.code-tree { max-height: 300px; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+.code-tree { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
 .code-tree ul { list-style: none; margin: 0; padding-left: 18px; }
-.code-tree > ul { padding-left: 0; }
+.code-tree > ul { padding-left: 0; columns: 5 200px; column-gap: 24px; }
+.code-tree > ul > li { break-inside: avoid; }
 .code-tree li { margin: 0; }
 .code-tree summary { cursor: pointer; padding: 2px 0; font-weight: 600; }
 .code-tree button.file {
@@ -241,7 +242,7 @@ main[data-tab="pseudocode"] { max-width: 1500px; }
 .code-tree button.file[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .code-detail { scroll-margin-top: 8px; }
 .code-head h2 { font: 600 1.05rem ui-monospace, "Cascadia Code", Consolas, monospace; margin-top: 20px; }
-.code-columns { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; }
+.code-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
 .code-columns h3 { margin-top: 8px; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
 .pseudo-pane, .code-pane { height: calc(100vh - 90px); min-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .pseudo-pane { position: relative; padding: 8px; }
@@ -265,3 +266,8 @@ main[data-tab="pseudocode"] { max-width: 1500px; }
   .pseudo-pane, .code-pane { height: 60vh; }
 }
 .code-tree button.file.bare { color: var(--later); }
+.level-switch { display: inline-flex; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.level-switch button { background: var(--surface); color: var(--muted); border: 0; padding: 7px 14px; font: inherit; font-size: 0.92rem; cursor: pointer; }
+.level-switch button + button { border-left: 1px solid var(--border); }
+.level-switch button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+.plan { white-space: pre-wrap; margin-bottom: 8px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; font: 0.84rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }

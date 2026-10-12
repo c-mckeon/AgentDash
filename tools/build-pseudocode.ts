@@ -32,9 +32,13 @@ interface Chunk {
   text: string;
 }
 
+/** Two levels per file: a high-level explanation, and a function-by-function plan. */
 interface Note {
   summary: string;
   chunks: Chunk[];
+  /** Opens the detailed level: what the file needs and how its parts connect. */
+  plan: string;
+  detail: Chunk[];
 }
 
 const read = (path: string) => readFileSync(path, "utf8").replace(/^﻿/, "").replace(/\r\n/g, "\n");
@@ -45,6 +49,8 @@ const lineCount = (text: string) => text.replace(/\n$/, "").split("\n").length;
  *   === path/to/file          starts a file; the lines after it are its summary
  *   @ 10-24, 30 | Title       starts a chunk covering those lines ("all" = whole file)
  *   ...                       the chunk's pseudocode, until the next @ or ===
+ *   --- detail                switches the file to its detailed level: the lines
+ *                             after it are the plan, and later chunks are detailed ones
  */
 function parseNotes(lengths: Map<string, number>): Map<string, Note> {
   const notes = new Map<string, Note>();
@@ -52,14 +58,19 @@ function parseNotes(lengths: Map<string, number>): Map<string, Note> {
     let path = "";
     let note: Note | null = null;
     let chunk: Chunk | null = null;
+    let detailed = false;
     for (const line of read(join(NOTES_DIR, name)).split("\n")) {
       if (line.startsWith("=== ")) {
         path = line.slice(4).trim();
         if (notes.has(path)) throw new Error(`${path} has notes twice`);
         if (!lengths.has(path)) throw new Error(`${name} has notes for ${path}, which is not in the repository`);
-        note = { summary: "", chunks: [] };
+        note = { summary: "", chunks: [], plan: "", detail: [] };
         chunk = null;
+        detailed = false;
         notes.set(path, note);
+      } else if (note && line.trim() === "--- detail") {
+        detailed = true;
+        chunk = null;
       } else if (note && line.startsWith("@ ")) {
         const [where, ...title] = line.slice(2).split("|");
         const last = lengths.get(path)!;
@@ -72,14 +83,16 @@ function parseNotes(lengths: Map<string, number>): Map<string, Note> {
           return [from, to];
         });
         chunk = { title: title.join("|").trim(), ranges, text: "" };
-        note.chunks.push(chunk);
+        (detailed ? note.detail : note.chunks).push(chunk);
       } else if (chunk) chunk.text += `${line}\n`;
+      else if (note && detailed) note.plan += `${line}\n`;
       else if (note) note.summary += `${line}\n`;
     }
   }
   for (const note of notes.values()) {
     note.summary = note.summary.trim();
-    for (const chunk of note.chunks) chunk.text = chunk.text.trim();
+    note.plan = note.plan.trim();
+    for (const chunk of [...note.chunks, ...note.detail]) chunk.text = chunk.text.trim();
   }
   return notes;
 }
@@ -120,6 +133,6 @@ if (process.argv.includes("--accept")) {
 }
 
 // Files with no notes yet are still listed, with their code and no chunks.
-const files = paths.map((path) => ({ path, text: texts.get(path)!, ...(notes.get(path) ?? { summary: "", chunks: [] }) }));
+const files = paths.map((path) => ({ path, text: texts.get(path)!, ...(notes.get(path) ?? { summary: "", chunks: [], plan: "", detail: [] }) }));
 writeFileSync(OUTPUT, JSON.stringify({ files }));
 console.log(`Wrote ${files.length} files to web/data/code.json, ${notes.size} with pseudocode`);

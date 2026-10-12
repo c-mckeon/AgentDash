@@ -35,6 +35,79 @@ run the agent loop on TASK, giving it:
     emit       print each event as one JSON line
     maxSteps   MAX_STEPS, or 8 if not given
 
+--- detail
+GOAL
+    Be the program the orchestrator starts inside the sandbox with "node /agent/main.ts".
+    Own everything that touches the outside world, so loop.ts can stay pure logic.
+
+WHAT WE NEED
+    settings    five values read from the environment
+    chat()      the only function defined here: one model request through the gateway
+    one call to runAgent(), handing it chat, the tools, and a way to report
+
+HOW IT CONNECTS
+    orchestrator/run.ts  starts this file and sets the environment variables
+    loop.ts              supplies runAgent and the ChatResult shape
+    protocol.ts          supplies REPLY_SCHEMA, sent with every request
+    context.ts           supplies MAX_REPLY_TOKENS
+    tools.ts             supplies runTool
+    standard output      every event is printed here; run.ts reads it line by line
+
+@ 6-10 | Borrow from the other agent files
+import MAX_REPLY_TOKENS           from context.ts     (400: the reply size we budgeted for)
+import runAgent, type ChatResult  from loop.ts
+import REPLY_SCHEMA               from protocol.ts    (the shape every reply must have)
+import runTool                    from tools.ts
+
+@ 12-16 | settings: read the orders
+take GATEWAY_URL, RUN_PASS, TASK, REPO_DIR, MAX_STEPS from the environment
+IF GATEWAY_URL, RUN_PASS, TASK or REPO_DIR is missing:
+    print one event: {type: "finished", step: 0, reason: "model_error",
+                      summary: "agent started without its settings"}
+        (printed as an event so the orchestrator records it like any other ending)
+    exit with code 2
+MAX_STEPS is optional; it gets a default later
+
+@ 18-18 | chat(messages) → ChatResult
+FUNCTION chat(messages)
+    input:   the list of messages to send
+    output:  a ChatResult, which is either
+                 {ok: true,  content, usage}
+                 {ok: false, status, error}
+    rule:    never throws. Every failure becomes an {ok: false} result,
+             because the loop decides what a failure means, not this function.
+
+@ 19-25 | chat: build and send the request
+    TRY
+        POST to GATEWAY_URL + "/v1/chat"
+            header  authorization: "Bearer " + RUN_PASS      (who we are)
+            header  content-type: application/json
+            body:
+                messages
+                response_format = REPLY_SCHEMA               (forces a tool-call-shaped reply)
+                max_tokens      = MAX_REPLY_TOKENS
+                temperature     = 0                          (same input gives the same output)
+            abort after 180 seconds
+
+@ 26-28 | chat: turn the response into a ChatResult
+        body = the response read as JSON
+        IF the gateway answered with an error status:
+            RETURN {ok: false, status: that status, error: body.error}
+                (status 402 is how the gateway says "budget spent")
+        RETURN {ok: true, content: body.message.content or "", usage: body.usage or {}}
+
+@ 29-32 | chat: network failures
+    CATCH anything thrown (no connection, timeout, reply was not JSON)
+        RETURN {ok: false, status: 0, error: the message}
+
+@ 34-39 | Start the loop with real parts
+CALL runAgent(TASK, deps) and wait for it, where deps is a new object:
+    chat      = the function above
+    runTool   = (call) → runTool(call, REPO_DIR)        (pins every tool to the repository)
+    emit      = (event) → print the event as one line of JSON
+    maxSteps  = MAX_STEPS as a number, or 8
+nothing is done with the returned Outcome: the "finished" event was already printed by the loop
+
 === agent/loop.ts
 The agent loop itself: ask the model what to do, do it, show the model what happened, and repeat until it finishes or a stopping rule fires.
 
@@ -93,6 +166,147 @@ for each step, up to maxSteps:
     report its result
     add "Tool result: ..." to the conversation
 if the loop runs out of steps: stop with "max_steps"
+
+--- detail
+GOAL
+    Drive a model through a task one tool call at a time, and always end with a clear reason.
+    Know nothing about HTTP, files or sandboxes: everything real is passed in.
+    That makes the loop testable with a scripted fake model.
+
+WHAT WE NEED
+    Shapes (no behaviour, just agreed forms of data):
+        ChatResult    what one model request gave back
+        StopReason    the six ways a run can end
+        AgentEvent    one reportable thing that happened
+        LoopDeps      the four things the caller must supply
+        Outcome       what runAgent returns
+    Constants:
+        REPEAT_LIMIT, PARSE_ERROR_LIMIT
+    Functions:
+        runAgent(task, deps) → Outcome     the only exported function
+        stop(step, reason, summary)        a helper inside runAgent that ends the run
+
+HOW IT CONNECTS
+    main.ts        calls runAgent with the real chat, runTool and emit
+    context.ts     fitMessages() trims the conversation before every request
+    protocol.ts    systemPrompt() writes the instructions; parseReply() reads each reply
+    tools.ts       clip() shortens text in events; the ToolResult shape comes from here
+    tests          call runAgent with fake deps, so no model is needed
+
+OBJECTS CREATED
+    messages      the growing conversation; lives for the whole run
+    events        one per model reply, tool call, tool result, parse error, and ending
+    one Outcome   returned at the end
+
+@ 6-11 | Borrow from the other agent files
+import fitMessages, type Message      from context.ts
+import parseReply, systemPrompt       from protocol.ts
+import type ToolCall                  from protocol.ts
+import clip, type ToolResult          from tools.ts
+
+@ 13-15 | ChatResult
+SHAPE ChatResult = one of
+    {ok: true,  content: text, usage: figures from the gateway}
+    {ok: false, status: number, error: text}
+made by:  the chat function in main.ts
+used by:  runAgent, to decide whether to carry on
+
+@ 17-17 | StopReason
+SHAPE StopReason = one of
+    "finished"           the model called finish
+    "max_steps"          ran out of allowed model calls
+    "stuck"              the same call three times running
+    "parse_errors"       three unreadable replies running
+    "budget_exhausted"   the gateway refused with 402
+    "model_error"        any other failed request
+used by:  orchestrator/run.ts, which turns it into the run's final status
+
+@ 19-23 | AgentEvent
+SHAPE AgentEvent
+    type   "model" | "tool_call" | "tool_result" | "parse_error" | "finished"
+    step   which turn of the loop it belongs to
+    ...    any further fields that suit the type
+made by:  runAgent
+used by:  emit; the orchestrator stores each one, and the dashboard feed shows them
+
+@ 25-30 | LoopDeps
+SHAPE LoopDeps: what the caller must hand in
+    chat(messages) → ChatResult     ask the model
+    runTool(call)  → ToolResult     carry out one tool call
+    emit(event)                     report something
+    maxSteps                        the limit on model calls
+
+@ 32-36 | Outcome
+SHAPE Outcome
+    reason    a StopReason
+    steps     how many turns were used
+    summary   optional text (the model's own summary, or an error message)
+
+@ 38-41 | Limits
+REPEAT_LIMIT      = 3    identical calls in a row before we call it stuck
+PARSE_ERROR_LIMIT = 3    unreadable replies in a row before we give up
+
+@ 43-50 | runAgent: starting state
+FUNCTION runAgent(task, deps) → Outcome
+    messages = [
+        {role: "system", content: systemPrompt()},      instructions and tool list
+        {role: "user",   content: "Task: " + task},
+    ]
+        (these first two are the ones context.ts promises never to drop)
+    lastCall    = ""     the previous tool call, as text, for comparison
+    repeats     = 0      how many times in a row it has been made
+    parseErrors = 0      unreadable replies in a row
+
+@ 52-55 | stop(): the single way out
+    HELPER stop(step, reason, summary)
+        emit {type: "finished", step, reason, summary if there is one}
+        RETURN a new Outcome {reason, steps: step, summary}
+    every exit below goes through stop, so a run can never end without a "finished" event
+
+@ 57-61 | Each turn: ask the model
+    FOR step = 1 up to deps.maxSteps
+        reply = deps.chat(fitMessages(messages))
+            (fitMessages returns a trimmed copy; the full list is kept here)
+        IF reply is not ok:
+            RETURN stop(step, "budget_exhausted" if status is 402 else "model_error", reply.error)
+
+@ 62-63 | Record the reply
+        emit {type: "model", step, content: reply clipped to 600 characters, usage}
+        add {role: "assistant", content: reply.content} to messages
+            (unclipped: the model must see exactly what it said)
+
+@ 65-75 | Read the reply as a tool call
+        parsed = parseReply(reply.content)        gives {call} or {error}
+        IF parsed is an error:
+            emit {type: "parse_error", step, error}
+            parseErrors = parseErrors + 1
+            IF parseErrors has reached PARSE_ERROR_LIMIT: RETURN stop(step, "parse_errors")
+            add a user message: "That was not a valid tool call: <error>. Reply with one JSON object like ..."
+                (this gives the model a chance to correct itself)
+            CONTINUE with the next step
+        parseErrors = 0         a readable reply clears the count
+
+@ 77-79 | Report the call; finish if asked
+        call = parsed.call
+        emit {type: "tool_call", step, tool, args}
+        IF call.tool is "finish": RETURN stop(step, "finished", call.args.summary)
+            (finish is never sent to runTool: it is a signal to the loop, not an action)
+
+@ 81-84 | Notice when it is stuck
+        signature = the call written out as text
+        IF signature equals lastCall: repeats = repeats + 1
+        ELSE: repeats = 1
+        lastCall = signature
+        IF repeats has reached REPEAT_LIMIT: RETURN stop(step, "stuck", "repeated <tool> 3 times")
+
+@ 86-88 | Carry out the call and feed back the result
+        result = deps.runTool(call)               a ToolResult {ok, output}
+        emit {type: "tool_result", step, ok, output clipped to 600 characters}
+        add {role: "user", content: "Tool result:\n" + result.output} to messages
+    END FOR
+
+@ 90-90 | Out of steps
+    RETURN stop(deps.maxSteps, "max_steps")
 
 === agent/protocol.ts
 The language the agent and the model speak: which tools exist, the instructions sent to the model, and a forgiving reader for what the model sends back.
@@ -155,6 +369,144 @@ to read a reply:
         anything else: error naming the missing argument
     return the tool call
 
+--- detail
+GOAL
+    Define the language between agent and model in one place:
+    which tools exist, how the model is told about them, and how its replies are read.
+    Research showed this model ignores Ollama's own tool feature and sometimes bends the
+    reply format, so we describe tools in our prompt and read replies forgivingly.
+
+WHAT WE NEED
+    Data:
+        TOOLS           the list of tools: name → description and argument names
+        REPLY_SCHEMA    the JSON shape every reply is forced into
+    Shapes:
+        ToolSpec        one entry in TOOLS
+        ToolCall        a reply once it has been read: {tool, args}
+    Functions:
+        systemPrompt() → text                    builds the instructions from TOOLS
+        parseReply(text) → {call} or {error}     reads a reply
+      and three private helpers for parseReply:
+        firstJsonObject(text)     find a JSON object buried in other text
+        isObject(value)           is this a plain object?
+        plainValue(value)         undo one known mistake in argument values
+
+HOW IT CONNECTS
+    TOOLS is the single source of truth. systemPrompt, REPLY_SCHEMA and parseReply all
+    read from it, so adding a tool here updates the instructions, the enforced format and
+    the validation together. Only tools.ts also needs the new tool's behaviour.
+    loop.ts     calls systemPrompt() once and parseReply() on every reply
+    main.ts     sends REPLY_SCHEMA with every request
+    tools.ts    receives the ToolCall and performs it
+
+@ 10-13 | ToolSpec
+SHAPE ToolSpec
+    description   one sentence the model will read
+    args          argument name → what to put in it
+
+@ 15-35 | TOOLS
+DATA TOOLS = a table of seven ToolSpecs, keyed by tool name
+    read_file        path
+    write_file       path, content           (the whole file)
+    append_file      path, content           (added at the end)
+    replace_in_file  path, find, replace     (one exact piece)
+    search_files     pattern
+    run_shell        command
+    finish           summary
+every argument is text. That keeps the reply format simple enough for a small model.
+append_file and replace_in_file exist because, asked to add a line, the model
+rewrote the whole file with only that line.
+
+@ 37-40 | ToolCall
+SHAPE ToolCall
+    tool   the name of one entry in TOOLS
+    args   argument name → text
+made by:  parseReply
+used by:  loop.ts (to report and compare) and tools.ts (to perform)
+
+@ 42-47 | REPLY_SCHEMA
+DATA REPLY_SCHEMA = a JSON schema saying:
+    the reply is an object
+    "tool" is text and must be one of the names in TOOLS
+    "args" is an object
+    both are required
+sent to the gateway, passed on to Ollama, which will not let the model write anything else
+
+@ 49-60 | systemPrompt() → text
+FUNCTION systemPrompt()
+    tools = for each entry in TOOLS, one line:
+                "- name(arg1, arg2): description"
+    RETURN these parts joined by line breaks:
+        who you are: a coding agent that acts only by calling tools, one per reply
+        how to behave: you see each result; look before changing; call finish when done
+        "Tools:" followed by the tool lines
+        the exact reply format: {"tool": "<tool name>", "args": {...}}
+        one worked example
+kept short on purpose: every token here is sent again with every request
+
+@ 62-64 | firstJsonObject(text): where to start
+HELPER firstJsonObject(text) → a parsed value, or nothing
+    used when the reply is JSON wrapped in prose or a code block
+    FOR each position of "{" in the text, left to right
+
+@ 65-76 | firstJsonObject: find the matching brace
+        depth = 0, inString = false, escaped = false
+        FOR each character from that "{" onwards
+            IF inside a string:
+                a character after a backslash is skipped
+                a backslash marks the next character as escaped
+                a quote ends the string
+            ELSE IF it is a quote: a string begins
+            ELSE IF it is "{": depth + 1
+            ELSE IF it is "}": depth - 1, and when depth is back to 0 this is the matching brace
+        (tracking strings matters: a "}" inside a file's content must not end the object)
+
+@ 77-86 | firstJsonObject: try it
+                TRY to parse the text from the "{" to the matching "}"
+                    success: RETURN the parsed value
+                    failure: stop scanning from this "{" and move on to the next one
+    RETURN nothing if no "{" led to valid JSON
+
+@ 88-89 | isObject(value)
+HELPER isObject(value) → true or false
+    true only for a plain object: not empty, not a list, not text or a number
+
+@ 91-94 | plainValue(value)
+HELPER plainValue(value)
+    the model sometimes copies the schema and writes {"type": "string", "value": "README.md"}
+    IF value is an object with a "value" field: RETURN that field
+    ELSE: RETURN value unchanged
+
+@ 96-103 | parseReply: get an object out of the text
+FUNCTION parseReply(text) → {call: ToolCall} or {error: text}
+    rule: never guess. Repair known shape mistakes; report everything else.
+    TRY parsing the whole trimmed text as JSON
+    if that fails: found = firstJsonObject(text)
+    IF found is not an object: RETURN {error: "the reply contained no JSON object"}
+
+@ 105-108 | parseReply: which tool
+    tool = found.tool, or found.name if "tool" is absent
+    IF tool is not text, or not a name in TOOLS:
+        RETURN {error: "unknown tool <tool>; the tools are <the seven names>"}
+            (the loop sends this back, so the error doubles as a reminder of the real tools)
+
+@ 110-112 | parseReply: where the arguments are
+    nested = the first of found.args, found.arguments, found.parameters that is an object
+    source = nested if it has anything in it, otherwise found itself
+        (covers {"tool": "read_file", "path": "README.md"} with nothing nested)
+
+@ 113-119 | parseReply: collect exactly the arguments this tool takes
+    args = a new empty object
+    FOR each argument name that TOOLS says this tool needs:
+        value = plainValue(source[name])
+        number or true/false → store as text
+        text                 → store as is
+        anything else        → RETURN {error: "<tool> needs the argument <name> as a string"}
+    extra fields the model added are simply never copied
+
+@ 120-120 | parseReply: done
+    RETURN {call: {tool, args}}
+
 === agent/context.ts
 Keeps every request small enough for the model to read. The model can hold 4,096 tokens and silently forgets the start of anything longer, which is exactly where the task is.
 
@@ -187,6 +539,86 @@ to fit a conversation into the budget:
         if it is already short, stop trying
         cut it in half and mark it "[cut to fit]"
     return what is left
+
+--- detail
+GOAL
+    Never send the model more than it can read.
+    Research: the window is 4,096 tokens, and anything over is cut from the START with no
+    error. The start holds the instructions and the task, so an over-long prompt makes the
+    model forget what it was asked to do. We count for ourselves and drop old steps instead.
+
+WHAT WE NEED
+    Shape:
+        Message                           {role, content}
+    Constants:
+        CONTEXT_WINDOW_TOKENS, MAX_REPLY_TOKENS, PROMPT_BUDGET_TOKENS, OMITTED_NOTE
+    Functions:
+        estimateTokens(text) → number     a cheap size estimate
+        total(messages) → number          private: estimated size of a conversation
+        fitMessages(messages, budget) → messages     the trimmed list to send
+
+HOW IT CONNECTS
+    loop.ts    calls fitMessages(messages) before every request; uses the Message shape
+    main.ts    sends MAX_REPLY_TOKENS as the reply limit, so the reserve below is honest
+    relies on  the conversation layout loop.ts builds:
+                   [0] instructions   [1] task   then pairs of (model reply, result)
+
+OBJECTS CREATED
+    fitMessages returns a new list. Its messages are the same objects as the caller's,
+    except that in the last-resort case a step's text is shortened in place.
+
+@ 9-12 | Message
+SHAPE Message
+    role      "system" | "user" | "assistant"
+    content   text
+this is the form the gateway and Ollama expect
+
+@ 14-17 | The budget
+CONTEXT_WINDOW_TOKENS = 4096                      what the model can hold
+MAX_REPLY_TOKENS      = 400                       room kept for its answer
+PROMPT_BUDGET_TOKENS  = 4096 - 400 - 300 = 3396   the 300 is a margin, because our count is an estimate
+
+@ 19-19 | The note left behind
+OMITTED_NOTE = "[Earlier steps were removed to save space.]"
+    shown to the model in place of dropped steps, so it knows its history is incomplete
+
+@ 21-24 | estimateTokens(text) → number
+FUNCTION estimateTokens(text)
+    RETURN length of text ÷ 3, rounded up
+measured at about 3.04 characters per token on code; 3 over-counts slightly, which is the safe direction
+
+@ 26-27 | total(messages) → number
+HELPER total(messages)
+    RETURN the sum over all messages of estimateTokens(content) + 4
+the 4 covers the role label and separators around each message
+
+@ 34-39 | fitMessages: split fixed from droppable
+FUNCTION fitMessages(messages, budget = PROMPT_BUDGET_TOKENS) → messages
+    fixed   = the first two messages (instructions, task): never removed
+    steps   = a copy of everything after them
+    dropped = false
+    HELPER assemble()
+        IF dropped: RETURN fixed + [a user message holding OMITTED_NOTE] + steps
+        ELSE:       RETURN fixed + steps
+
+@ 41-44 | fitMessages: drop the oldest steps
+    WHILE total(assemble()) is over budget AND more than 2 messages remain in steps
+        remove the first 2 from steps        (a reply and its result leave together,
+                                              so the model never sees one without the other)
+        dropped = true
+    the newest step is always kept: the model needs the result of what it just did
+
+@ 45-52 | fitMessages: last resort
+    fitted = assemble()
+    WHILE total(fitted) is still over budget          (one remaining step is enormous)
+        largest = the longest message after the first two
+        IF there is none, or it is under 200 characters: stop trying
+        cut largest to its first half and add "[cut to fit]"
+        fitted = assemble()
+    the task is never the thing that gets cut
+
+@ 53-53 | fitMessages: done
+    RETURN fitted
 
 === agent/tools.ts
 What each tool actually does inside the sandbox. File tools are locked to the repository folder, and all output is kept short because the model has to read it.
@@ -245,3 +677,130 @@ to run a tool call:
         it counts as ok only if the exit code is 0
     unknown tool: error
     if anything above throws, return the error as a normal failed result
+
+--- detail
+GOAL
+    Give each tool name real behaviour inside the sandbox.
+    Two promises: file tools cannot reach outside the repository, and nothing here throws.
+    A failure is returned as text, because the reader of the result is the model and it
+    can often fix its own mistake when told what went wrong.
+
+WHAT WE NEED
+    Shape:
+        ToolResult                              {ok, output}
+    Constants:
+        OUTPUT_LIMIT, SHELL_TIMEOUT_MS
+    Functions:
+        clip(text, limit) → text                shorten long text and say so
+        insideRepo(repoDir, path) → path or nothing     the safety check
+        run(file, args, cwd) → {code, stdout, stderr}   private: start a program and wait
+        runTool(call, repoDir) → ToolResult     perform one ToolCall
+
+HOW IT CONNECTS
+    protocol.ts   defines the ToolCall this file receives. A tool listed there with no
+                  branch here falls through to "unknown tool".
+    main.ts       wraps runTool so repoDir is always the cloned repository
+    loop.ts       calls it once per step, and reuses clip() for its events
+    the sandbox   provides sh and rg (ripgrep); see sandbox/image.ts
+
+OBJECTS CREATED
+    one ToolResult per call; files and folders in the repository as side effects
+
+@ 2-6 | What we use from Node
+execFile                      start a program without a shell in between
+mkdir, readFile, writeFile    file access
+dirname, resolve, sep         path arithmetic
+type ToolCall                 from protocol.ts
+
+@ 8-11 | ToolResult
+SHAPE ToolResult
+    ok       did it work?
+    output   text for the model: the content asked for, a confirmation, or "ERROR: ..."
+
+@ 13-15 | Limits
+OUTPUT_LIMIT     = 1500 characters    about 500 tokens; a result is re-sent on every later step
+SHELL_TIMEOUT_MS = 30 seconds
+
+@ 17-19 | clip(text, limit) → text
+FUNCTION clip(text, limit = OUTPUT_LIMIT)
+    IF text fits: RETURN it unchanged
+    ELSE: RETURN the first `limit` characters + "[cut: N characters in total]"
+        (the total tells the model there is more it has not seen)
+
+@ 21-26 | insideRepo(repoDir, path) → absolute path or nothing
+FUNCTION insideRepo(repoDir, path)
+    root   = repoDir as an absolute path
+    target = path resolved from root        (this collapses any "../" in it)
+    IF target is root, or starts with root + a path separator: RETURN target
+    ELSE: RETURN nothing
+        (the separator check stops /workspace/repo-other passing as inside /workspace/repo)
+
+@ 28-35 | run(file, args, cwd) → {code, stdout, stderr}
+HELPER run(file, args, cwd)
+    start the program in folder cwd, limited to SHELL_TIMEOUT_MS and 1 MB of output
+    when it ends:
+        code = 0 if no error, the program's exit code if it has one, otherwise 1
+        IF it was killed for running too long: add "[stopped after 30 s]" to stderr
+    RETURN {code, stdout, stderr}
+    it always resolves and never rejects, so callers need no error handling of their own
+
+@ 37-39 | runTool(call, repoDir) → ToolResult
+FUNCTION runTool(call, repoDir)
+    take tool and args from the call
+    TRY everything below
+
+@ 40-42 | The four file tools share one check
+        IF tool is read_file, write_file, append_file or replace_in_file:
+            path = insideRepo(repoDir, args.path)
+            IF nothing came back: RETURN {ok: false, "ERROR: <path> is outside the repository"}
+
+@ 43-43 | read_file
+            read_file: RETURN {ok: true, output: clip(the file's text)}
+
+@ 44-48 | write_file
+            write_file:
+                create the parent folders if they do not exist
+                write args.content as the whole file
+                RETURN {ok: true, "Wrote N characters to <path>"}
+
+@ 49-49 | Both editing tools start from the current text
+            before = the file's current text
+                (if the file does not exist this throws, and the CATCH below reports it)
+
+@ 50-56 | append_file
+            append_file:
+                joiner = a line break, unless the file is empty or already ends with one
+                ending = a line break, unless the new text already ends with one
+                write before + joiner + args.content + ending
+                RETURN {ok: true, "Added N characters to the end of <path>"}
+
+@ 57-60 | replace_in_file: is the text there?
+            replace_in_file:
+                matches = how many times args.find occurs in before
+                IF args.find is empty or matches is 0:
+                    RETURN {ok: false, "ERROR: that text was not found ... Read the file and copy the text exactly."}
+
+@ 61-63 | replace_in_file: change the first occurrence
+                write before with the first occurrence replaced by args.replace
+                    (inserted literally, so "$1" in the new text is not treated specially)
+                RETURN {ok: true, "Replaced the text in <path>", plus a remark if it appeared more than once}
+
+@ 65-70 | search_files
+        IF tool is search_files:
+            found = run("rg", with line numbers, at most 5 matches per file, lines cut at 200 columns,
+                        the pattern, searching "."), in repoDir
+            exit code 1 means no matches:   RETURN {ok: true, "No matches."}
+            any other non-zero code:        RETURN {ok: false, clip("ERROR: " + stderr)}
+            otherwise:                      RETURN {ok: true, clip(stdout)}
+
+@ 71-75 | run_shell
+        IF tool is run_shell:
+            result = run("sh", ["-c", args.command]), in repoDir
+            text = "exit code N", then stdout, then stderr, skipping empty parts
+            RETURN {ok: exit code is 0, output: clip(text)}
+        (this is the one tool not confined to the repository folder; the sandbox is its boundary)
+
+@ 76-79 | Anything else
+        RETURN {ok: false, "ERROR: unknown tool <tool>"}
+    CATCH any error from above (missing file, permission, ...)
+        RETURN {ok: false, clip("ERROR: " + the message)}

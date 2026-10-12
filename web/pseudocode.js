@@ -7,8 +7,13 @@
   const FIRST_FILE = "agent/loop.ts";
   const tree = document.getElementById("code-tree");
   const detail = document.getElementById("code-detail");
+  const switcher = document.getElementById("code-level");
   let files = null;
   let current = null;
+  // "overview" explains each part of a file; "detail" is the function-by-function plan.
+  let level = "overview";
+  /** The chunks on screen: the current file's, at the current level. */
+  let shown = [];
 
   function make(tag, className, text) {
     const node = document.createElement(tag);
@@ -34,14 +39,13 @@
     return root;
   }
 
-  function drawFolder(folder, openPath) {
+  function drawFolder(folder) {
     const list = make("ul");
     for (const [name, child] of [...folder.folders].sort(([a], [b]) => a.localeCompare(b))) {
       const item = make("li");
       const fold = make("details");
-      child.prefix = `${folder.prefix ?? ""}${name}/`;
-      fold.open = openPath.startsWith(child.prefix);
-      fold.append(make("summary", "", `${name}/`), drawFolder(child, openPath));
+      fold.open = true;
+      fold.append(make("summary", "", `${name}/`), drawFolder(child));
       item.append(fold);
       list.append(item);
     }
@@ -64,6 +68,7 @@
     const file = files.find((entry) => entry.path === path);
     if (!file) return;
     current = file;
+    shown = level === "detail" ? file.detail : file.chunks;
     for (const button of tree.querySelectorAll("button.file")) {
       button.setAttribute("aria-current", String(button.dataset.path === path));
     }
@@ -83,12 +88,14 @@
       const row = event.target.closest(".line");
       if (!row) return;
       const n = Number(row.dataset.n);
-      const index = file.chunks.findIndex((chunk) => chunk.ranges.some(([from, to]) => n >= from && n <= to));
+      const index = shown.findIndex((chunk) => chunk.ranges.some(([from, to]) => n >= from && n <= to));
       if (index !== -1) selectChunk(index, false);
     });
 
     const pseudo = make("div", "pseudo-pane");
-    file.chunks.forEach((chunk, index) => {
+    // The detailed level opens with the plan: what the file needs and how its parts connect.
+    if (level === "detail" && file.plan) pseudo.append(make("div", "plan", file.plan));
+    shown.forEach((chunk, index) => {
       const card = make("button", "chunk");
       card.type = "button";
       const where = chunk.ranges.map(([from, to]) => (from === to ? `${from}` : `${from}–${to}`)).join(", ");
@@ -97,14 +104,14 @@
       pseudo.append(card);
     });
 
-    if (!file.chunks.length) pseudo.append(make("p", "note", "No pseudocode has been written for this file yet."));
+    if (!shown.length) pseudo.append(make("p", "note", "No pseudocode has been written for this file yet."));
 
     const head = make("div", "code-head");
     head.append(make("h2", "", path), make("p", "", file.summary));
     const columns = make("div", "code-columns");
     const left = make("div");
     const right = make("div");
-    left.append(make("h3", "", "Pseudocode"), pseudo);
+    left.append(make("h3", "", level === "detail" ? "Detailed pseudocode" : "High-level explanation"), pseudo);
     right.append(make("h3", "", `Actual code · ${lines.length} lines`), code);
     columns.append(left, right);
     detail.replaceChildren(head, columns);
@@ -112,7 +119,7 @@
   }
 
   function selectChunk(index, scrollCode) {
-    const chunk = current.chunks[index];
+    const chunk = shown[index];
     const cards = detail.querySelectorAll(".chunk");
     cards.forEach((card, at) => card.setAttribute("aria-pressed", String(at === index)));
     const pane = detail.querySelector(".code-pane");
@@ -132,6 +139,18 @@
     }
   }
 
+  // ---------------------------------------------------------------- level switch
+
+  switcher.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-level]");
+    if (!button || button.dataset.level === level) return;
+    level = button.dataset.level;
+    for (const other of switcher.querySelectorAll("button")) {
+      other.setAttribute("aria-pressed", String(other === button));
+    }
+    if (current) showFile(current.path, false);
+  });
+
   // ---------------------------------------------------------------- loading
 
   // The data is sizeable, so it is fetched the first time the tab is opened.
@@ -147,7 +166,7 @@
       tree.replaceChildren(make("p", "note", `Could not load the repository view (${error.message}).`));
       return;
     }
-    tree.replaceChildren(drawFolder(nest(files.map((file) => file.path)), FIRST_FILE));
+    tree.replaceChildren(drawFolder(nest(files.map((file) => file.path))));
     showFile(files.some((file) => file.path === FIRST_FILE) ? FIRST_FILE : files[0].path, false);
   });
 })();
