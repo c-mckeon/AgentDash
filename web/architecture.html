@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentDash Architecture</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --text: #1b1f24;
+    --muted: #5b6470;
+    --border: #d5dae1;
+    --accent: #0b6bcb;
+    --accent-soft: #e3effb;
+    --built: #1a7f4b;
+    --built-soft: #e2f4ea;
+    --later: #8a929d;
+    --code-bg: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171b;
+      --surface: #1c2026;
+      --text: #e6e9ed;
+      --muted: #9aa3ae;
+      --border: #343a43;
+      --accent: #6cb2f5;
+      --accent-soft: #1b3350;
+      --built: #5fcf94;
+      --built-soft: #183526;
+      --later: #747c87;
+      --code-bg: #262b32;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171b;
+    --surface: #1c2026;
+    --text: #e6e9ed;
+    --muted: #9aa3ae;
+    --border: #343a43;
+    --accent: #6cb2f5;
+    --accent-soft: #1b3350;
+    --built: #5fcf94;
+    --built-soft: #183526;
+    --later: #747c87;
+    --code-bg: #262b32;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  h2 { font-size: 1.05rem; margin: 28px 0 8px; }
+  p { margin: 0 0 12px; }
+  .lede { color: var(--muted); margin-bottom: 24px; }
+  code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font: 0.88em ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 12px 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font: 0.86rem/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    margin: 0 0 12px;
+  }
+
+  details.step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 10px;
+  }
+  details.step > summary {
+    cursor: pointer;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-weight: 600;
+    list-style: none;
+  }
+  details.step > summary::-webkit-details-marker { display: none; }
+  details.step > summary::before {
+    content: "▸";
+    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  details.step[open] > summary::before { transform: rotate(90deg); }
+  details.step > summary .num { color: var(--muted); font-weight: 500; }
+  .body { padding: 0 16px 18px; border-top: 1px solid var(--border); }
+
+  .chip {
+    margin-left: auto;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .chip.done { color: var(--built); background: var(--built-soft); border-color: transparent; }
+  .chip.current { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+
+  .scroll { overflow-x: auto; }
+  svg.diagram { display: block; min-width: 720px; width: 100%; height: auto; }
+  .diagram text { fill: var(--text); font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .diagram .t-title { font-weight: 600; }
+  .diagram .t-muted { fill: var(--muted); font-size: 12px; }
+  .diagram .box-built { fill: var(--built-soft); stroke: var(--built); stroke-width: 1.5; }
+  .diagram .box-todo { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .diagram .box-later { fill: none; stroke: var(--later); stroke-width: 1.2; stroke-dasharray: 5 4; }
+  .diagram .zone { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  .diagram .arrow { stroke: var(--text); stroke-width: 1.4; fill: none; }
+  .diagram .arrow-later { stroke: var(--later); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; }
+  .diagram .head { fill: var(--text); }
+  .diagram .head-later { fill: var(--later); }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); margin: 8px 0 0; }
+  .legend span::before {
+    content: "";
+    display: inline-block;
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: -2px;
+  }
+  .legend .l-built::before { background: var(--built-soft); border: 1.5px solid var(--built); }
+  .legend .l-todo::before { background: var(--accent-soft); border: 1.5px solid var(--accent); }
+  .legend .l-later::before { border: 1.5px dashed var(--later); }
+
+  dl.qa dt { font-weight: 600; margin-top: 12px; }
+  dl.qa dd { margin: 2px 0 0; color: var(--text); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; min-width: 620px; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  td:first-child { white-space: nowrap; }
+  ul { margin: 0 0 12px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .note { color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AgentDash architecture, step by step</h1>
+  <p class="lede">One section per build step. Each shows what the system looked like at that point, what the step added, the questions that came up, and a snapshot of the project folder. The current step is open.</p>
+
+  <!-- ============ STEP 0 ============ -->
+  <details class="step">
+    <summary><span class="num">Step 0</span> Modal account and tools <span class="chip done">Done</span></summary>
+    <div class="body">
+      <h2>What this step added</h2>
+      <ul>
+        <li>A Modal account: workspace <code>c-mckeon</code>, Starter plan, no payment card, $1 of free credit.</li>
+        <li>The Modal command-line tool, installed into Python 3.13 on the PC. It is run as <code>py -m modal</code> because <code>modal</code> itself is not on the PATH.</li>
+        <li>A login token saved at <code>C:\Users\kevmc\.modal.toml</code>, which lets the tool act on the account.</li>
+      </ul>
+      <p class="note">No project code existed yet. The design decisions are in <code>DESIGN.md</code>.</p>
+    </div>
+  </details>
+
+  <!-- ============ STEP 1 (current) ============ -->
+  <details class="step" open>
+    <summary><span class="num">Step 1</span> Model endpoint and gateway <span class="chip current">In progress</span></summary>
+    <div class="body">
+
+      <h2>Architecture at this step</h2>
+      <p>So far one thing is built: a machine image on Modal containing Ollama and the Qwen model, proven by a one-off smoke test. Still to build in this step are a permanent model endpoint and the gateway in front of it.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 480" role="img" aria-label="Architecture at step 1: a PC runs the smoke test script through the Modal tool; Modal holds a cached model image with Ollama and Qwen; a model endpoint and a gateway are still to be built; sandbox, API, dashboard, router and supervisor come in later steps.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+            <marker id="ah-later" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head-later" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <!-- Your PC -->
+          <rect class="box-built" x="20" y="56" width="210" height="130" rx="8"/>
+          <text class="t-title" x="36" y="80">Your PC</text>
+          <text x="36" y="104">smoke_test.py</text>
+          <text x="36" y="124">Modal tool + login token</text>
+          <text class="t-muted" x="36" y="150">Only sends instructions.</text>
+          <text class="t-muted" x="36" y="166">No model runs here.</text>
+
+          <!-- Gateway -->
+          <rect class="box-todo" x="20" y="246" width="210" height="130" rx="8"/>
+          <text class="t-title" x="36" y="270">Gateway</text>
+          <text x="36" y="294">Model registry</text>
+          <text x="36" y="314">Metering (tokens, CPU time)</text>
+          <text x="36" y="334">Budget hard stop (€10)</text>
+          <text class="t-muted" x="36" y="358">Where it runs: undecided</text>
+
+          <!-- Modal zone -->
+          <rect class="zone" x="290" y="20" width="590" height="270" rx="12"/>
+          <text class="t-title" x="306" y="44">Modal cloud</text>
+          <text class="t-muted" x="396" y="44">workspace c-mckeon</text>
+
+          <!-- Model image -->
+          <rect class="box-built" x="310" y="60" width="250" height="210" rx="8"/>
+          <text class="t-title" x="326" y="84">Model image (cached)</text>
+          <text x="326" y="110">Ollama 0.40.3</text>
+          <text x="326" y="130">qwen2.5-coder:1.5b (986 MB)</text>
+          <text class="t-muted" x="326" y="160">A recipe for a machine.</text>
+          <text class="t-muted" x="326" y="176">Costs nothing while stored.</text>
+          <text class="t-muted" x="326" y="206">Smoke test ran it once:</text>
+          <text class="t-muted" x="326" y="222">4 CPU cores, about 10 s,</text>
+          <text class="t-muted" x="326" y="238">about 26 tokens per second.</text>
+
+          <!-- Model endpoint -->
+          <rect class="box-todo" x="610" y="60" width="250" height="210" rx="8"/>
+          <text class="t-title" x="626" y="84">Model endpoint</text>
+          <text x="626" y="110">A fixed web address that</text>
+          <text x="626" y="130">answers model requests</text>
+          <text class="t-muted" x="626" y="160">Starts a machine from the</text>
+          <text class="t-muted" x="626" y="176">image when a request arrives.</text>
+          <text class="t-muted" x="626" y="206">Shuts down when idle, so it</text>
+          <text class="t-muted" x="626" y="222">costs nothing between runs.</text>
+
+          <!-- PC -> image -->
+          <path class="arrow" d="M230 110 L308 110" marker-end="url(#ah)"/>
+          <text class="t-muted" x="234" y="100">build + run</text>
+
+          <!-- image -> endpoint -->
+          <path class="arrow" d="M560 165 L608 165" marker-end="url(#ah)"/>
+
+          <!-- gateway -> endpoint -->
+          <path class="arrow" d="M230 300 L270 300 L270 304 L735 304 L735 272" marker-end="url(#ah)"/>
+          <text class="t-muted" x="440" y="322">forwards model requests</text>
+
+          <!-- Later steps -->
+          <text class="t-muted" x="290" y="392">Later steps</text>
+          <rect class="box-later" x="290" y="402" width="110" height="60" rx="8"/>
+          <text x="300" y="426">Sandbox</text>
+          <text class="t-muted" x="300" y="446">steps 2, 4</text>
+
+          <rect class="box-later" x="410" y="402" width="110" height="60" rx="8"/>
+          <text x="420" y="426">API, database</text>
+          <text class="t-muted" x="420" y="446">step 3</text>
+
+          <rect class="box-later" x="530" y="402" width="110" height="60" rx="8"/>
+          <text x="540" y="426">Dashboard</text>
+          <text class="t-muted" x="540" y="446">step 5</text>
+
+          <rect class="box-later" x="650" y="402" width="110" height="60" rx="8"/>
+          <text x="660" y="426">Router</text>
+          <text class="t-muted" x="660" y="446">step 6</text>
+
+          <rect class="box-later" x="770" y="402" width="110" height="60" rx="8"/>
+          <text x="780" y="426">Supervisor</text>
+          <text class="t-muted" x="780" y="446">step 7</text>
+
+          <!-- sandbox -> gateway (later) -->
+          <path class="arrow-later" d="M288 432 L125 432 L125 378" marker-end="url(#ah-later)"/>
+          <text class="t-muted" x="134" y="424">agent's model calls</text>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built</span>
+        <span class="l-todo">This step, still to build</span>
+        <span class="l-later">Later steps</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <table>
+        <tr><th>Piece</th><th>Status</th><th>What it is for</th></tr>
+        <tr><td>Model image</td><td>Built</td><td>Ollama and the Qwen model packed into a reusable machine recipe, so a new machine does not download 986 MB every time it starts.</td></tr>
+        <tr><td>Smoke test</td><td>Done</td><td>Proved the model runs at usable speed on CPU and showed how it formats tool calls.</td></tr>
+        <tr><td>Model endpoint</td><td>To build</td><td>Turns the one-off test into a service other parts can call at any time.</td></tr>
+        <tr><td>Gateway</td><td>To build</td><td>The single door every model request goes through. It counts usage, knows which models exist, and refuses requests once the month's €10 is spent. Built first because every later step spends money.</td></tr>
+      </table>
+
+      <h2>Biggest questions at this version</h2>
+      <dl class="qa">
+        <dt>What is a harness, and do we have one yet?</dt>
+        <dd>A harness is the program that runs a model in a loop: send the task, read the model's reply, carry out the tool it asked for, send the result back, repeat. We do not have one yet; it is step 4. The smoke test imitated a single turn of that loop by hand and stopped.</dd>
+
+        <dt>Where does Ollama fit?</dt>
+        <dd>Ollama is the program that loads a model file and answers requests with it. It is not a harness and not a computer. Here it runs inside the Modal machine and serves the Qwen model.</dd>
+
+        <dt>What does Modal do that Ollama and Hugging Face do not?</dt>
+        <dd>Modal is the computer. Hugging Face and Ollama's library are where model files are downloaded from; Ollama runs a model once it has a machine. Since nothing runs on the PC, Modal rents us that machine by the second, and later it will also provide the sandboxes.</dd>
+
+        <dt>What did the smoke test prove?</dt>
+        <dd>That a 1.5B model on 4 CPU cores writes about 26 tokens per second and loads in 3.5 seconds, which is fast enough to continue. It also showed the model picks the right tool but writes the call in the wrong shape, so our harness will need a forgiving parser.</dd>
+
+        <dt>Still open</dt>
+        <dd>Where the gateway runs while we develop it, given nothing should run on the PC. Whether to add a payment card to Modal, since only $1 of credit is available without one.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">A snapshot of what was in <code>C:\Code\AgentDash</code> when this section was written (12 October 2026).</p>
+<pre>AgentDash/
+├── DESIGN.md
+├── model-server/
+│   ├── smoke_test.py
+│   └── __pycache__/
+└── web/
+    └── architecture.html</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr>
+            <td><code>DESIGN.md</code></td>
+            <td>The record of every design decision (24 so far), the confirmed defaults, the vendor comparison, the build order and the smoke test results.</td>
+            <td>The source this page is drawn from. No code reads it.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/</code></td>
+            <td>Everything that defines the machine the model runs on. The one part of the project written in Python, because Modal machines are described in Python.</td>
+            <td>Will be called by the gateway. Runs on Modal, never on the PC.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/smoke_test.py</code></td>
+            <td>Describes the model image (Ollama plus Qwen), then runs two test prompts on a 4-core machine and prints the timings.</td>
+            <td>Sent to Modal by <code>py -m modal run model-server/smoke_test.py</code>. The image it defines will be reused by the real endpoint.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/__pycache__/</code></td>
+            <td>Files Python generates automatically to start faster.</td>
+            <td>Safe to delete. Not part of the project.</td>
+          </tr>
+          <tr>
+            <td><code>web/</code></td>
+            <td>The dashboard. For now it holds only this page.</td>
+            <td>Becomes the full dashboard in step 5.</td>
+          </tr>
+          <tr>
+            <td><code>web/architecture.html</code></td>
+            <td>This page.</td>
+            <td>A single file with no dependencies. Open it in a browser.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>Outside the folder</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Where</th><th>What</th><th>Role</th></tr>
+          <tr>
+            <td>PC</td>
+            <td><code>C:\Users\kevmc\.modal.toml</code></td>
+            <td>The Modal login token. The Modal tool reads it to prove who you are. Keep it private and out of the project folder.</td>
+          </tr>
+          <tr>
+            <td>PC</td>
+            <td>Modal tool 1.6.1 in Python 3.13</td>
+            <td>Reads <code>smoke_test.py</code>, uploads it, and shows the output. It does no model work itself.</td>
+          </tr>
+          <tr>
+            <td>Modal</td>
+            <td>Workspace <code>c-mckeon</code></td>
+            <td>Holds the cached model image and the record of the smoke test run. Nothing is deployed or running.</td>
+          </tr>
+          <tr>
+            <td>Docker Hub</td>
+            <td><code>ollama/ollama</code> image</td>
+            <td>The base the model image is built from. Modal downloaded it once during the build.</td>
+          </tr>
+          <tr>
+            <td>Ollama library</td>
+            <td><code>qwen2.5-coder:1.5b</code></td>
+            <td>The model file. Downloaded once into the image during the build.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>How the pieces connect</h2>
+<pre>smoke_test.py ──(Modal tool, using the token)──► Modal
+                                                  │
+                    Docker Hub: ollama/ollama ────┤  build once, then cached
+                    Ollama library: Qwen file ────┘
+                                                  │
+                                                  ▼
+                                     machine: Ollama ⇄ Qwen
+                                                  │
+                          timings and replies ◄───┘  machine shuts down</pre>
+    </div>
+  </details>
+
+  <!-- ============ LATER STEPS ============ -->
+  <details class="step">
+    <summary><span class="num">Step 2</span> Sandbox <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>A disposable computer per run, on Modal: create it, run a command in it, destroy it. Adds <code>sandbox-provider/</code> (the code that asks Modal for a sandbox) and <code>sandbox/</code> (the definition of what is installed on it).</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 3</span> Skeleton: API, database, orchestrator <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>The server side: <code>config.ts</code>, <code>db/</code>, <code>api/</code> and <code>orchestrator/</code>. A run gets a lifecycle (queued, triaging, running, reviewing, done), a short-lived token, and a stored event log.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 4</span> Harness <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>The agent itself, in <code>agent/</code>: the loop and four tools (read file, write or edit file, search files, run shell command), running inside the sandbox and calling the model through the gateway. Includes the forgiving tool-call parser the smoke test showed we need. Output is a patch from a cloned public repository.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 5</span> Dashboard <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>The control panel in <code>web/</code>: live feed of what the agent is doing, replay of past runs, diff view, cost and compute view, start and kill, owner login. This page becomes part of it.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 6</span> Router <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>A second, larger model on the same machine, and <code>router/</code>: a small model rates each task and picks which model size does the work. Each decision is recorded with its reason and shown on the dashboard.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 7</span> Supervisor <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p><code>supervisor/</code>: cheap rule checks on every event, a model verdict when a rule fires, a review of the final diff, and the power to kill a run. An "escalate" verdict is recorded as a flag until a larger model tier exists.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 8</span> Deploy <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>Free-tier hosting for the API, database and dashboard, plus a few good recorded runs for visitors to replay.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+</main>
+</body>
+</html>
