@@ -31,11 +31,6 @@
   <h1>AgentDash architecture, step by step</h1>
   <p class="lede">One section per build step. Each shows what the system looked like at that point, what the step added, the questions that came up, and a snapshot of the project folder. The current step is open.</p>
 
-  <div class="latest">
-    <p class="when">Latest milestone · 12 October 2026</p>
-    <p><strong>Step 4 is done: an AI agent now does real work inside a sandbox.</strong> Given a task in plain words and a repository, the system starts a sandbox, puts the agent in it, and the agent asks the model what to do, reads and writes files, runs commands, and hands back a patch, with every step recorded. Three first tasks were run: one was done correctly, one got stuck and was stopped automatically, and one was reported as done when it was wrong. That last result is the clearest argument so far for the supervisor planned in step 7. Since then the agent has gained tools for adding to and replacing part of a file, which fixed the stuck task, and the <a href="#dashboard">Dashboard</a> tab now shows a read-only preview built from three recorded runs. Details are on the <a href="#research">Research</a> tab.</p>
-  </div>
-
   <!-- ============ STEP 0 ============ -->
   <details class="step">
     <summary><span class="num">Step 0</span> Modal account and tools <span class="chip done">Done</span></summary>
@@ -1036,7 +1031,7 @@ anyone ── GET /runs/:id/events ───────────────
   <h1>Research notes</h1>
   <p class="lede">Small experiments run against the system as it stood on each date, to learn what our choices are good at and where they limit us. One section per date, newest first, with a section per topic inside each date.</p>
 
-  <details class="step" open>
+  <details class="step">
     <summary><span class="num">12 October 2026</span> First measurements: cost tracking, tool calls, context size, first agent runs <span class="chip done">6 findings</span></summary>
     <div class="body">
 

@@ -6,8 +6,7 @@
 
 const TABS = ["dashboard", "architecture", "research"];
 
-function showTab() {
-  const wanted = location.hash.replace("#", "");
+function showTab(wanted) {
   const tab = TABS.includes(wanted) ? wanted : "dashboard";
   for (const name of TABS) {
     document.getElementById(`tab-${name}`).hidden = name !== tab;
@@ -17,11 +16,23 @@ function showTab() {
   }
   document.title = `AgentDash ${tab[0].toUpperCase()}${tab.slice(1)}`;
 }
-window.addEventListener("hashchange", () => {
-  showTab();
+
+// Switching tabs never changes the address: any link to a tab is handled here
+// instead of by the browser.
+document.addEventListener("click", (event) => {
+  const link = event.target.closest('a[href^="#"]');
+  if (!link) return;
+  const name = link.getAttribute("href").slice(1);
+  if (!TABS.includes(name)) return;
+  event.preventDefault();
+  showTab(name);
   window.scrollTo(0, 0);
 });
-showTab();
+
+// An old link such as architecture.html arrives with a tab name after the #.
+// Open that tab, then tidy the address back to the plain one.
+showTab(location.hash.slice(1));
+if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 
 // ---------------------------------------------------------------- helpers
 
