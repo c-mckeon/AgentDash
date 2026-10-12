@@ -191,6 +191,17 @@ Full write-up: `web/research.html`. Raw data: `research/results/2026-10-12.jsonl
 - **Verified live:** create in 1.2–2.2 s with a cached image; clone, edit and `git diff` of a public repository; the gateway reachable from inside; non-zero exit and timeout reported correctly; sandbox stopped after destroy.
 - **Not yet done:** sandbox time is not written to the gateway's ledger (the orchestrator will do this in step 3); the live check runs from the developer's PC.
 
+### 28. Step 3 as built: API, database, orchestrator (2026-10-12)
+- **`config.ts`** reads `GATEWAY_URL`, `GATEWAY_KEY`, `OWNER_TOKEN` (required) and optional `DB_PATH`, `PORT`, `RUN_TOKEN_TTL_SECONDS` (900), `SANDBOX_MAX_LIFETIME_SECONDS` (600).
+- **`api/`** on plain `node:http`: `GET /health`, `GET /runs`, `POST /runs`, `GET /runs/:id`, `GET /runs/:id/events?after=`, `POST /runs/:id/kill`. Reads are public; starting and killing need the owner token (decision 16). Repository addresses must match `https://github.com/<owner>/<name>` (decision 17).
+- **`orchestrator/`**: `state.ts` holds the lifecycle rules; `run.ts` executes a run and always destroys the sandbox; kill is checked between stages and keeps any patch (decision 18). Router, agent and supervisor stages are passed through and logged as skipped until steps 6, 4 and 7.
+- **`db/`: SQLite via Node's built-in driver, not hosted Postgres.** A deviation from the confirmed default, made so no provider account is needed yet. All SQL is in `db/index.ts`; moving to Postgres at deploy (step 8) means rewriting that file. Tables: `runs`, `events`, `model_assignments`.
+- **Per-run passes:** `"<runId>.<expiry>.<HMAC-SHA256>"`, signed with the gateway key by `orchestrator/tokens.ts` and verified statelessly by `gateway/core.py`. A pass may only call `/v1/chat`, and the gateway overrides `run_id` and forces `role = worker`. This replaces the shared key for sandboxes (decision 25); the owner key remains for server-side roles.
+- **Event transport changed.** The confirmed default was "agent posts events to the API". A cloud sandbox cannot reach a server that is not yet hosted, and an inbound path from sandboxes is an extra surface to secure. Instead the agent will write events to its output as JSON lines, which the orchestrator reads through the sandbox provider and stores. The sandbox then needs outbound access to the gateway only.
+- **Hosting:** the API runs on the developer's PC for the live check only. Hosting is step 8.
+- **Verified live:** normal run done in about 7 s with 13 events and $0.0003 of sandbox time; missing repository → `failed` with the sandbox destroyed; kill → `killed` with the sandbox destroyed; pass accepted from inside the sandbox; expired, altered and wrongly signed passes refused. The model was not woken.
+- **Not yet done:** one-run-at-a-time is not enforced; sandbox cost is on the run record but not in the gateway ledger.
+
 ## Defaults (confirmed 2026-10-12)
 
 Chosen to keep v1 small.

@@ -94,6 +94,11 @@ def web():
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         return hmac.compare_digest(supplied.encode(), expected.encode())
 
+    def run_from_pass(request: Request) -> str | None:
+        """The run id if the caller holds a valid per-run pass."""
+        supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        return core.verify_run_token(os.environ["GATEWAY_KEY"], supplied, time.time())
+
     def denied():
         return JSONResponse({"error": "unauthorised"}, status_code=401)
 
@@ -123,7 +128,10 @@ def web():
 
     @api.post("/v1/chat")
     async def chat(request: Request):
-        if not authorised(request):
+        # The owner key may call as any role. A per-run pass, which is all a
+        # sandbox holds, may only call as that run's worker.
+        pass_run_id = None if authorised(request) else run_from_pass(request)
+        if not authorised(request) and pass_run_id is None:
             return denied()
         try:
             body = await request.json()
@@ -132,6 +140,9 @@ def web():
         clean, problem = core.validate_chat_request(body)
         if problem:
             return JSONResponse({"error": problem}, status_code=400)
+        if pass_run_id is not None:
+            clean["run_id"] = pass_run_id
+            clean["role"] = "worker"
         entry = core.REGISTRY[clean["tier"]]
 
         async with lock:

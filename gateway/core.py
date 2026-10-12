@@ -4,6 +4,8 @@ Kept free of Modal and FastAPI imports so it can be unit-tested anywhere and
 moved into another server later without changes.
 """
 
+import hashlib
+import hmac
 from dataclasses import asdict, dataclass
 from datetime import datetime
 
@@ -66,6 +68,30 @@ REGISTRY = {
         num_threads=4,
     ),
 }
+
+
+def sign_run_token(secret: str, run_id: str, expires_at: int) -> str:
+    """A per-run pass: "<run id>.<expiry>.<signature>".
+
+    The orchestrator issues these (orchestrator/tokens.ts, same format) so a
+    sandbox never holds the gateway key itself.
+    """
+    payload = f"{run_id}.{int(expires_at)}"
+    return f"{payload}.{hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()}"
+
+
+def verify_run_token(secret: str, token: str, now: float) -> str | None:
+    """The run id if the pass is genuine and unexpired, otherwise None."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    run_id, expiry, given = parts
+    expected = hmac.new(secret.encode(), f"{run_id}.{expiry}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(given.encode(), expected.encode()):
+        return None
+    if not expiry.isdigit() or now >= int(expiry):
+        return None
+    return run_id
 
 
 def month_key(now: datetime) -> str:

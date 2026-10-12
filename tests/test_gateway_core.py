@@ -121,6 +121,31 @@ class LedgerTests(unittest.TestCase):
         self.assertIsNone(record["error"])
 
 
+class RunTokenTests(unittest.TestCase):
+    SECRET = "test-secret"
+    # orchestrator/tokens.ts must produce exactly this for the same inputs.
+    KNOWN = "run_abc123.2000000000.fc0e121f129f9eb9deb4e8237b41a5be2f3f96bb3f95a7d498766944e04eb15a"
+
+    def test_signing_matches_the_known_pass(self):
+        self.assertEqual(core.sign_run_token(self.SECRET, "run_abc123", 2000000000), self.KNOWN)
+
+    def test_genuine_unexpired_pass_yields_its_run(self):
+        self.assertEqual(core.verify_run_token(self.SECRET, self.KNOWN, 1999999999), "run_abc123")
+
+    def test_bad_passes_are_refused(self):
+        bad = [
+            (self.SECRET, self.KNOWN, 2000000000),  # expired
+            (self.SECRET, self.KNOWN.replace("run_abc123", "run_other1"), 1),  # run swapped
+            (self.SECRET, self.KNOWN.replace("2000000000", "3000000000"), 1),  # expiry extended
+            ("other-secret", self.KNOWN, 1),
+            (self.SECRET, "not-a-pass", 1),
+            (self.SECRET, "", 1),
+        ]
+        for secret, token, now in bad:
+            with self.subTest(token=token[:30], now=now):
+                self.assertIsNone(core.verify_run_token(secret, token, now))
+
+
 class ValidationTests(unittest.TestCase):
     def ok(self, **overrides):
         return {"messages": [{"role": "user", "content": "hi"}], **overrides}

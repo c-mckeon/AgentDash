@@ -11,5 +11,13 @@
     "erasableSyntaxOnly": true,
     "types": ["node"]
   },
-  "include": ["sandbox/**/*.ts", "sandbox-provider/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "config.ts",
+    "api/**/*.ts",
+    "db/**/*.ts",
+    "orchestrator/**/*.ts",
+    "sandbox/**/*.ts",
+    "sandbox-provider/**/*.ts",
+    "tests/**/*.ts"
+  ]
 }
