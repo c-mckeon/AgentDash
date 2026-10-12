@@ -214,6 +214,13 @@ The owner chose to build on the current small model and measure, rather than add
 - **Verified live, 3 tasks:** 9 of 9 replies were valid tool calls. One task correct; one overwrote a file it was asked to append to and was stopped as stuck; one was marked done although its script printed the wrong output. Runs took 15–26 s; about $0.008 model time and $0.003 sandbox time in total. A run killed mid-way ended as `killed` within a second.
 - **Suggested by the results, not yet done:** an append/replace edit tool; the supervisor's result review.
 
+### 30. Edit tools, single-page site, and a read-only dashboard preview (2026-10-12)
+- **Two more agent tools:** `append_file(path, content)` and `replace_in_file(path, find, replace)`, added because the model overwrote a file it was asked to add a line to. On a rerun that task was done correctly in 2 model calls. The task where the agent reports success despite wrong output is unchanged and waits for the supervisor.
+- **The site is one page**, `web/index.html`, with Dashboard, Architecture and Research tabs switched by URL hash without a page load. `web/architecture.html` and `web/research.html` are redirects. Styles are in `web/site.css`; tab and dashboard code in `web/dashboard.js`. This supersedes the "Architecture page" section below where it names `web/architecture.html`.
+- **Research is organised by date, then by topic** within each date.
+- **Dashboard tab is a preview only.** The owner asked that it not be functional while the site is public. It renders recorded runs from `web/data/runs.json` (exported with `node orchestrator/try-it.ts --export web/data/runs.json`): summary tiles, run list, event feed with client-side replay, patch and cost breakdown. Start and kill buttons are disabled; the page makes no request other than loading that file. Plain HTML, CSS and JavaScript for now, not the React app named in the defaults.
+- **Still to do for step 5:** live connection to the API (Server-Sent Events), owner login, and hosting.
+
 ## Defaults (confirmed 2026-10-12)
 
 Chosen to keep v1 small.

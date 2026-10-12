@@ -37,13 +37,30 @@ function run(file: string, args: string[], cwd: string): Promise<{ code: number;
 export async function runTool(call: ToolCall, repoDir: string): Promise<ToolResult> {
   const { tool, args } = call;
   try {
-    if (tool === "read_file" || tool === "write_file") {
+    if (["read_file", "write_file", "append_file", "replace_in_file"].includes(tool)) {
       const path = insideRepo(repoDir, args.path);
       if (!path) return { ok: false, output: `ERROR: ${args.path} is outside the repository` };
       if (tool === "read_file") return { ok: true, output: clip(await readFile(path, "utf8")) };
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, args.content);
-      return { ok: true, output: `Wrote ${args.content.length} characters to ${args.path}` };
+      if (tool === "write_file") {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, args.content);
+        return { ok: true, output: `Wrote ${args.content.length} characters to ${args.path}` };
+      }
+      const before = await readFile(path, "utf8");
+      if (tool === "append_file") {
+        // Start on a fresh line, and leave the file ending with one.
+        const joiner = before === "" || before.endsWith("\n") ? "" : "\n";
+        const ending = args.content.endsWith("\n") ? "" : "\n";
+        await writeFile(path, before + joiner + args.content + ending);
+        return { ok: true, output: `Added ${args.content.length} characters to the end of ${args.path}` };
+      }
+      const matches = before.split(args.find).length - 1;
+      if (!args.find || matches === 0) {
+        return { ok: false, output: `ERROR: that text was not found in ${args.path}. Read the file and copy the text exactly.` };
+      }
+      await writeFile(path, before.replace(args.find, () => args.replace));
+      const extra = matches > 1 ? ` (it appears ${matches} times; only the first was changed)` : "";
+      return { ok: true, output: `Replaced the text in ${args.path}${extra}` };
     }
     if (tool === "search_files") {
       const found = await run("rg", ["--line-number", "--max-count", "5", "--max-columns", "200", "--", args.pattern, "."], repoDir);

@@ -6,6 +6,7 @@
  *   node orchestrator/try-it.ts              the default tasks below
  *   node orchestrator/try-it.ts "<task>"     one task of your own
  */
+import { writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 
 import { createApi } from "../api/server.ts";
@@ -72,12 +73,26 @@ async function runToEnd(task: string, killAfterMs?: number) {
   }
 }
 
-const custom = process.argv[2];
+// --export <file> saves the complete runs (record, model choices, every event)
+// for the dashboard's recorded-run preview, and skips the kill check.
+const exportAt = process.argv.indexOf("--export");
+const exportPath = exportAt === -1 ? null : process.argv[exportAt + 1];
+const custom = exportAt === 2 ? undefined : process.argv[2];
 const results = [];
 for (const task of custom ? [custom] : DEFAULT_TASKS) results.push(await runToEnd(task));
-if (!custom) results.push({ killed: await runToEnd(DEFAULT_TASKS[2], 6000) });
+if (!custom && !exportPath) results.push({ killed: await runToEnd(DEFAULT_TASKS[2], 6000) });
 
-console.log(JSON.stringify(results, null, 2));
+if (exportPath) {
+  const usage = await fetch(`${config.gatewayUrl}/v1/usage`, { headers: { authorization: `Bearer ${config.gatewayKey}` } });
+  const { budget } = (await usage.json()) as { budget: unknown };
+  const runs = db
+    .listRuns()
+    .reverse()
+    .map((run) => ({ run, assignments: db.listAssignments(run.id), events: db.listEvents(run.id) }));
+  await writeFile(exportPath, JSON.stringify({ exportedAt: new Date().toISOString(), budget, runs }, null, 1));
+}
+
+console.log(JSON.stringify(results.map(({ patch, ...rest }: any) => rest), null, 2));
 api.close();
 db.close();
 sandboxes.close();

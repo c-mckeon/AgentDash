@@ -172,3 +172,66 @@ a { color: var(--accent); }
 .bad { color: #c0392b; font-weight: 600; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .bad { color: #ff8a7a; } }
 :root[data-theme="dark"] .bad { color: #ff8a7a; }
+
+/* ---- single-page tabs */
+section[hidden] { display: none; }
+
+/* ---- research topics inside a date */
+details.topic { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; }
+details.topic > summary { cursor: pointer; padding: 10px 14px; font-weight: 600; }
+details.topic[open] > summary { border-bottom: 1px solid var(--border); }
+.topic-body { padding: 4px 14px 12px; }
+
+/* ---- dashboard preview */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-bottom: 24px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.tile-label { color: var(--muted); font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+.tile-value { font-size: 1.7rem; font-weight: 650; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.tile-note { color: var(--muted); font-size: 0.85rem; }
+.meter { height: 6px; background: var(--code-bg); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.meter-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+
+.dash { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 760px) { .dash { grid-template-columns: minmax(0, 1fr); } }
+.dash h2 { margin-top: 0; }
+.run-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.run-list li { margin: 0 0 8px; }
+.run-row {
+  display: grid; gap: 4px; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.run-row[aria-current] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.run-task { font-size: 0.92rem; }
+.run-meta { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.run-detail { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+.run-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.run-head h3 { margin: 0; font-size: 1.05rem; }
+.run-detail .note { overflow-wrap: anywhere; }
+
+.status { font-size: 0.75rem; font-weight: 700; padding: 2px 9px; border-radius: 999px; white-space: nowrap; justify-self: start; border: 1px solid var(--border); color: var(--muted); }
+.status.good { color: var(--built); background: var(--built-soft); border-color: transparent; }
+.status.bad { color: #c0392b; border-color: currentColor; }
+
+.controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+.button { font: inherit; font-size: 0.88rem; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; }
+.button:hover:not([disabled]) { border-color: var(--accent); color: var(--accent); }
+.button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+.feed { list-style: none; margin: 0; padding: 0; }
+.feed-item { display: grid; grid-template-columns: 52px 78px minmax(0, 1fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+.feed-item[hidden] { display: none; }
+.feed-time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.8rem; padding-top: 2px; }
+.feed-who { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding-top: 3px; }
+.who-agent .feed-who, .who-model .feed-who { color: var(--accent); }
+.feed-title { font-weight: 600; overflow-wrap: anywhere; }
+.feed-body pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feed-body .note { margin: 2px 0 0; }
+
+.diff { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff .add { color: var(--built); }
+.diff .del { color: #c0392b; }
+table.cost { min-width: 0; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .status.bad, :root:not([data-theme="light"]) .diff .del { color: #ff8a7a; }
+}
+:root[data-theme="dark"] .status.bad, :root[data-theme="dark"] .diff .del { color: #ff8a7a; }

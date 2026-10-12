@@ -55,8 +55,10 @@ test("invented tools, missing arguments and non-JSON are reported, not guessed",
 
 test("the instructions name every tool and stay small", () => {
   const prompt = systemPrompt();
-  for (const tool of ["read_file", "write_file", "search_files", "run_shell", "finish"]) assert.ok(prompt.includes(tool));
-  assert.ok(estimateTokens(prompt) < 350);
+  for (const tool of ["read_file", "write_file", "append_file", "replace_in_file", "search_files", "run_shell", "finish"]) {
+    assert.ok(prompt.includes(tool));
+  }
+  assert.ok(estimateTokens(prompt) < 450);
 });
 
 // ---------------------------------------------------------------- context window
@@ -118,6 +120,30 @@ test("write then read a file, creating folders, and refuse to escape", async () 
     assert.match(missing.output, /^ERROR:/);
     const escape = await runTool({ tool: "write_file", args: { path: "../outside.txt", content: "x" } }, repo);
     assert.match(escape.output, /outside the repository/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("append and replace change part of a file and keep the rest", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "agentdash-"));
+  const read = async () => readFile(join(repo, "README"), "utf8");
+  try {
+    await runTool({ tool: "write_file", args: { path: "README", content: "Hello World!" } }, repo);
+    const appended = await runTool({ tool: "append_file", args: { path: "README", content: "Edited by an agent." } }, repo);
+    assert.equal(appended.ok, true);
+    assert.equal(await read(), "Hello World!\nEdited by an agent.\n");
+
+    const replaced = await runTool({ tool: "replace_in_file", args: { path: "README", find: "World", replace: "$& there" } }, repo);
+    assert.equal(replaced.ok, true);
+    assert.equal(await read(), "Hello $& there!\nEdited by an agent.\n");
+
+    const absent = await runTool({ tool: "replace_in_file", args: { path: "README", find: "nowhere", replace: "x" } }, repo);
+    assert.equal(absent.ok, false);
+    assert.match(absent.output, /not found/);
+    const noFile = await runTool({ tool: "append_file", args: { path: "missing.txt", content: "x" } }, repo);
+    assert.equal(noFile.ok, false);
+    assert.match((await runTool({ tool: "append_file", args: { path: "../x", content: "x" } }, repo)).output, /outside the repository/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

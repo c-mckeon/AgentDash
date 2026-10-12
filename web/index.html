@@ -3,10 +3,1258 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="0; url=architecture.html">
 <title>AgentDash</title>
+<link rel="stylesheet" href="site.css">
 </head>
 <body>
-<p><a href="architecture.html">AgentDash architecture, step by step</a></p>
+<main>
+  <nav class="tabs"><a href="#dashboard">Dashboard</a><a href="#architecture">Architecture</a><a href="#research">Research</a></nav>
+
+  <section id="tab-dashboard">
+  <h1>Dashboard</h1>
+  <p class="lede">What the control panel will show. This is a read-only preview on a public site: it displays real runs recorded on <span id="dash-recorded">an earlier date</span>, and its start and kill buttons are not connected to anything.</p>
+
+  <div id="dash-tiles" class="tiles"></div>
+
+  <div class="dash">
+    <div>
+      <h2>Runs</h2>
+      <ul id="dash-runs" class="run-list"></ul>
+      <p class="note">"Done" means the agent reported that it finished. Nothing checks its work yet; that is the supervisor's job in step 7.</p>
+    </div>
+    <div id="dash-detail" class="run-detail"></div>
+  </div>
+  </section>
+
+  <section id="tab-architecture" hidden>
+
+  <h1>AgentDash architecture, step by step</h1>
+  <p class="lede">One section per build step. Each shows what the system looked like at that point, what the step added, the questions that came up, and a snapshot of the project folder. The current step is open.</p>
+
+  <div class="latest">
+    <p class="when">Latest milestone · 12 October 2026</p>
+    <p><strong>Step 4 is done: an AI agent now does real work inside a sandbox.</strong> Given a task in plain words and a repository, the system starts a sandbox, puts the agent in it, and the agent asks the model what to do, reads and writes files, runs commands, and hands back a patch, with every step recorded. Three first tasks were run: one was done correctly, one got stuck and was stopped automatically, and one was reported as done when it was wrong. That last result is the clearest argument so far for the supervisor planned in step 7. Since then the agent has gained tools for adding to and replacing part of a file, which fixed the stuck task, and the <a href="#dashboard">Dashboard</a> tab now shows a read-only preview built from three recorded runs. Details are on the <a href="#research">Research</a> tab.</p>
+  </div>
+
+  <!-- ============ STEP 0 ============ -->
+  <details class="step">
+    <summary><span class="num">Step 0</span> Modal account and tools <span class="chip done">Done</span></summary>
+    <div class="body">
+      <h2>What this step added</h2>
+      <ul>
+        <li>A Modal account: workspace <code>c-mckeon</code>, Starter plan, no payment card, $1 of free credit.</li>
+        <li>The Modal command-line tool, installed into Python 3.13 on the PC. It is run as <code>py -m modal</code> because <code>modal</code> itself is not on the PATH.</li>
+        <li>A login token saved at <code>%USERPROFILE%\.modal.toml</code>, which lets the tool act on the account.</li>
+      </ul>
+      <p class="note">No project code existed yet. The design decisions are in <code>DESIGN.md</code>.</p>
+    </div>
+  </details>
+
+  <!-- ============ STEP 1 (current) ============ -->
+  <details class="step">
+    <summary><span class="num">Step 1</span> Model service and gateway <span class="chip done">Done</span></summary>
+    <div class="body">
+
+      <h2>Corrected after research (12 October 2026)</h2>
+      <p>What follows is step 1 as first built. The <a href="#research">research</a> done afterwards changed three things:</p>
+      <ul>
+        <li>The model is limited to 4 processor threads. Left alone it used about 19 cores, which Modal charges for; the limit gave the same writing speed at about half the cost.</li>
+        <li>The ledger charges each call for the idle and start/stop time around it, not only the call.</li>
+        <li>The budget hard stop uses the larger of our ledger and Modal's own meter. The ledger alone had been recording about an eighth of the real bill.</li>
+      </ul>
+      <p>The gateway also gained an option to force the model's reply to be JSON, which the harness will need.</p>
+
+      <h2>Architecture at this step</h2>
+      <p>Three things are built and running on Modal: a machine image containing Ollama and the Qwen model, a model service that starts a machine from that image whenever it is called, and the gateway, which is the only part with a public web address. A prompt sent to the gateway comes back with an answer, a cost, and the remaining budget.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 480" role="img" aria-label="Architecture at step 1: a PC runs the smoke test script through the Modal tool; Modal holds a cached model image with Ollama and Qwen; a model endpoint and a gateway are still to be built; sandbox, API, dashboard, router and supervisor come in later steps.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+            <marker id="ah-later" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head-later" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <!-- Your PC -->
+          <rect class="box-built" x="20" y="56" width="210" height="130" rx="8"/>
+          <text class="t-title" x="36" y="80">Your PC</text>
+          <text x="36" y="104">smoke_test.py</text>
+          <text x="36" y="124">Modal tool + login token</text>
+          <text class="t-muted" x="36" y="150">Only sends instructions.</text>
+          <text class="t-muted" x="36" y="166">No model runs here.</text>
+
+          <!-- Gateway -->
+          <rect class="box-built" x="20" y="246" width="210" height="130" rx="8"/>
+          <text class="t-title" x="36" y="270">Gateway (public address)</text>
+          <text x="36" y="294">Model registry</text>
+          <text x="36" y="314">Metering (tokens, CPU time)</text>
+          <text x="36" y="334">Budget hard stop</text>
+          <text class="t-muted" x="36" y="358">Runs on Modal for now</text>
+
+          <!-- Modal zone -->
+          <rect class="zone" x="290" y="20" width="590" height="270" rx="12"/>
+          <text class="t-title" x="306" y="44">Modal cloud</text>
+          <text class="t-muted" x="396" y="44">workspace c-mckeon</text>
+
+          <!-- Model image -->
+          <rect class="box-built" x="310" y="60" width="250" height="210" rx="8"/>
+          <text class="t-title" x="326" y="84">Model image (cached)</text>
+          <text x="326" y="110">Ollama 0.40.3</text>
+          <text x="326" y="130">qwen2.5-coder:1.5b (986 MB)</text>
+          <text class="t-muted" x="326" y="160">A recipe for a machine.</text>
+          <text class="t-muted" x="326" y="176">Costs nothing while stored.</text>
+          <text class="t-muted" x="326" y="206">Smoke test ran it once:</text>
+          <text class="t-muted" x="326" y="222">4 CPU cores, about 10 s,</text>
+          <text class="t-muted" x="326" y="238">about 26 tokens per second.</text>
+
+          <!-- Model endpoint -->
+          <rect class="box-built" x="610" y="60" width="250" height="210" rx="8"/>
+          <text class="t-title" x="626" y="84">Model service</text>
+          <text x="626" y="110">Answers model requests.</text>
+          <text x="626" y="130">No public address.</text>
+          <text class="t-muted" x="626" y="160">Starts a machine from the</text>
+          <text class="t-muted" x="626" y="176">image when the gateway calls.</text>
+          <text class="t-muted" x="626" y="206">Shuts down after 60 s idle, so</text>
+          <text class="t-muted" x="626" y="222">it costs nothing between runs.</text>
+
+          <!-- PC -> image -->
+          <path class="arrow" d="M230 110 L308 110" marker-end="url(#ah)"/>
+          <text class="t-muted" x="234" y="100">build + run</text>
+
+          <!-- image -> endpoint -->
+          <path class="arrow" d="M560 165 L608 165" marker-end="url(#ah)"/>
+
+          <!-- gateway -> endpoint -->
+          <path class="arrow" d="M230 300 L270 300 L270 304 L735 304 L735 272" marker-end="url(#ah)"/>
+          <text class="t-muted" x="440" y="322">forwards model requests</text>
+
+          <!-- Later steps -->
+          <text class="t-muted" x="290" y="392">Later steps</text>
+          <rect class="box-later" x="290" y="402" width="110" height="60" rx="8"/>
+          <text x="300" y="426">Sandbox</text>
+          <text class="t-muted" x="300" y="446">steps 2, 4</text>
+
+          <rect class="box-later" x="410" y="402" width="110" height="60" rx="8"/>
+          <text x="420" y="426">API, database</text>
+          <text class="t-muted" x="420" y="446">step 3</text>
+
+          <rect class="box-later" x="530" y="402" width="110" height="60" rx="8"/>
+          <text x="540" y="426">Dashboard</text>
+          <text class="t-muted" x="540" y="446">step 5</text>
+
+          <rect class="box-later" x="650" y="402" width="110" height="60" rx="8"/>
+          <text x="660" y="426">Router</text>
+          <text class="t-muted" x="660" y="446">step 6</text>
+
+          <rect class="box-later" x="770" y="402" width="110" height="60" rx="8"/>
+          <text x="780" y="426">Supervisor</text>
+          <text class="t-muted" x="780" y="446">step 7</text>
+
+          <!-- sandbox -> gateway (later) -->
+          <path class="arrow-later" d="M288 432 L125 432 L125 378" marker-end="url(#ah-later)"/>
+          <text class="t-muted" x="134" y="424">agent's model calls</text>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built</span>
+        <span class="l-todo">This step, still to build</span>
+        <span class="l-later">Later steps</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <table>
+        <tr><th>Piece</th><th>Status</th><th>What it is for</th></tr>
+        <tr><td>Model image</td><td>Built</td><td>Ollama and the Qwen model packed into a reusable machine recipe, so a new machine does not download 986 MB every time it starts.</td></tr>
+        <tr><td>Smoke test</td><td>Done</td><td>Proved the model runs at usable speed on CPU and showed how it formats tool calls.</td></tr>
+        <tr><td>Model service</td><td>Built</td><td>Turns the one-off test into a service that can be called at any time. It has no public address; only the gateway can reach it.</td></tr>
+        <tr><td>Gateway</td><td>Built</td><td>The single door every model request goes through. It checks the caller's key, counts usage, knows which models exist, and refuses requests once the month's budget is spent. Built first because every later step spends money.</td></tr>
+      </table>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li>A prompt sent through the gateway returned an answer, with token counts, seconds and cost attached.</li>
+        <li>First call after idle: about 8 to 10 seconds, half of it waking the machine. Calls while it is awake: well under a second for a short reply.</li>
+        <li>Requests with no key or a wrong key were refused.</li>
+        <li>With the budget limit temporarily set below what had been spent, the gateway refused the request without waking the model. The limit was then restored.</li>
+        <li>The ledger survived redeploys: five calls recorded, about a quarter of a cent in total.</li>
+      </ul>
+      <p class="note">The budget limit is set to $0.50 for now, not €10, because the Modal account has only $1 of free credit. The gateway's own small machine is not yet counted in the ledger, so Modal's bill will be slightly higher than the ledger says.</p>
+
+      <h2>What the gateway is</h2>
+      <p>A small program of ours that sits between anything that wants to use a model and the model itself. Every model request goes through it; nothing talks to the model directly.</p>
+<pre>agent in a sandbox ─┐
+triage (router)     ├─►  GATEWAY  ─►  model endpoint (Ollama + Qwen on Modal)
+supervisor         ─┘</pre>
+      <p>Think of a reception desk in front of an expensive specialist. Reception checks you are allowed in, logs the visit, sends you to the right room, and turns you away once the month's budget is gone.</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Job</th><th>What it does</th><th>Why it matters</th></tr>
+          <tr>
+            <td>Counting</td>
+            <td>Records, for every request, the tokens in and out, how long the model took, and which run and role (worker, triage, supervisor) asked.</td>
+            <td>The dashboard's cost and compute view is built from these records.</td>
+          </tr>
+          <tr>
+            <td>Budget hard stop</td>
+            <td>Checks the month's spend before forwarding a request and refuses once the €10 allowance is used up.</td>
+            <td>Modal's Starter plan has no spending limit of its own, so this is the only guard. It is why the gateway is built first.</td>
+          </tr>
+          <tr>
+            <td>Routing by registry</td>
+            <td>Holds the list of which models exist and where they live. A caller asks for "the small tier"; the gateway knows which model and address that means.</td>
+            <td>Adding a larger model later is a new line in the list. Callers do not change.</td>
+          </tr>
+          <tr>
+            <td>Keeping secrets out of sandboxes</td>
+            <td>Checks the short-lived pass each run is given. Any real API key added later lives here.</td>
+            <td>A sandbox runs code an AI wrote, so it should hold nothing worth stealing.</td>
+          </tr>
+        </table>
+      </div>
+      <p class="note">What it is not: it is not the model, not Ollama and not Modal, and it generates nothing. It is also not the harness. The harness decides what to ask the model; the gateway only carries the question and logs it. The smoke test had no gateway: the script talked straight to Ollama on the same machine, which left no record and no spending limit.</p>
+
+      <h2>Biggest questions at this version</h2>
+      <dl class="qa">
+        <dt>What is a harness, and do we have one yet?</dt>
+        <dd>A harness is the program that runs a model in a loop: send the task, read the model's reply, carry out the tool it asked for, send the result back, repeat. We do not have one yet; it is step 4. The smoke test imitated a single turn of that loop by hand and stopped.</dd>
+
+        <dt>Where does Ollama fit?</dt>
+        <dd>Ollama is the program that loads a model file and answers requests with it. It is not a harness and not a computer. Here it runs inside the Modal machine and serves the Qwen model.</dd>
+
+        <dt>What does Modal do that Ollama and Hugging Face do not?</dt>
+        <dd>Modal is the computer. Hugging Face and Ollama's library are where model files are downloaded from; Ollama runs a model once it has a machine. Since nothing runs on the PC, Modal rents us that machine by the second, and later it will also provide the sandboxes.</dd>
+
+        <dt>What did the smoke test prove?</dt>
+        <dd>That a 1.5B model on 4 CPU cores writes about 26 tokens per second and loads in 3.5 seconds, which is fast enough to continue. It also showed the model picks the right tool but writes the call in the wrong shape, so our harness will need a forgiving parser.</dd>
+
+        <dt>Why do we need a model service as well as the gateway?</dt>
+        <dd>The smoke test started a machine, asked two questions and shut it down, and only that one script could talk to the model. The gateway needs something it can forward to at any moment. The model service is the same image wrapped so that it wakes when called and sleeps when idle. They are separate machines on purpose: the gateway is tiny and cheap, so checking a key or refusing an over-budget request never wakes the expensive 4-core machine.</dd>
+
+        <dt>Could the gateway move into the control dashboard later?</dt>
+        <dd>Yes. Its rules (registry, pricing, budget, request checks) are in one file with no ties to Modal, so they can be lifted into another server. Only the thin web wrapper would be rewritten.</dd>
+
+        <dt>Still open</dt>
+        <dd>Whether to add a payment card to Modal, since only $1 of credit is available without one. The gateway is written in Python because it runs on Modal, which is an exception to the plan of TypeScript everywhere.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">A snapshot of what was in <code>C:\Code\AgentDash</code> when this section was written (12 October 2026).</p>
+<pre>AgentDash/
+├── .git/
+├── .github/
+│   └── workflows/
+│       └── pages.yml
+├── .gitignore
+├── .env
+├── DESIGN.md
+├── gateway/
+│   ├── core.py
+│   ├── main.py
+│   └── try_it.py
+├── model-server/
+│   ├── serve.py
+│   ├── smoke_test.py
+│   └── __pycache__/
+├── tests/
+│   └── test_gateway_core.py
+└── web/
+    ├── index.html
+    └── architecture.html</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr>
+            <td><code>DESIGN.md</code></td>
+            <td>The record of every design decision (24 so far), the confirmed defaults, the vendor comparison, the build order and the smoke test results.</td>
+            <td>The source this page is drawn from. No code reads it.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/</code></td>
+            <td>Everything that defines the machine the model runs on. The one part of the project written in Python, because Modal machines are described in Python.</td>
+            <td>Will be called by the gateway. Runs on Modal, never on the PC.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/serve.py</code></td>
+            <td>The model service. Describes the image (Ollama plus Qwen) and the machine (4 CPU cores, 4 GiB, shut down after 60 idle seconds), and offers one operation: answer a chat request.</td>
+            <td>Deployed to Modal as the app <code>agentdash-model</code>. Called only by <code>gateway/main.py</code>. Its hardware numbers must match the registry in <code>gateway/core.py</code>, because the gateway prices calls from them.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/smoke_test.py</code></td>
+            <td>The original one-off test: runs two prompts on a 4-core machine and prints the timings.</td>
+            <td>Kept for re-measuring speed. Not used by anything else.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/</code></td>
+            <td>The gateway: the one public door to the models.</td>
+            <td>Sits between every caller and <code>model-server/</code>.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/core.py</code></td>
+            <td>The gateway's rules: the model registry, Modal's prices, the monthly budget limit, how a call is costed (call time plus the idle time before it), and what a valid request looks like.</td>
+            <td>Plain Python with no cloud code in it, so it can be tested on its own and moved to another server later. Used by <code>main.py</code> and checked by <code>tests/</code>.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/main.py</code></td>
+            <td>The web wrapper: receives requests, checks the key, asks <code>core.py</code> whether the budget allows the call, forwards it to the model service, and writes one ledger line.</td>
+            <td>Deployed to Modal as the app <code>agentdash-gateway</code>. Reads its key from a Modal secret and keeps the ledger on a Modal volume.</td>
+          </tr>
+          <tr>
+            <td><code>gateway/try_it.py</code></td>
+            <td>A small helper for sending one prompt through the gateway, or printing the month's usage.</td>
+            <td>Runs on the PC. Reads the gateway's address and key from <code>.env</code>.</td>
+          </tr>
+          <tr>
+            <td><code>tests/test_gateway_core.py</code></td>
+            <td>19 automatic checks of the rules in <code>core.py</code>: pricing, budget, idle time, ledger totals and request checking.</td>
+            <td>Needs no model and no internet. Run with <code>py -m unittest discover -s tests</code>.</td>
+          </tr>
+          <tr>
+            <td><code>.env</code></td>
+            <td>The gateway's address and its secret key, for use from the PC.</td>
+            <td>Listed in <code>.gitignore</code>, so it never reaches GitHub. The same key is stored on Modal as a secret.</td>
+          </tr>
+          <tr>
+            <td><code>model-server/__pycache__/</code></td>
+            <td>Files Python generates automatically to start faster.</td>
+            <td>Safe to delete. Not part of the project.</td>
+          </tr>
+          <tr>
+            <td><code>web/</code></td>
+            <td>The dashboard. For now it holds only this page.</td>
+            <td>Becomes the full dashboard in step 5.</td>
+          </tr>
+          <tr>
+            <td><code>web/architecture.html</code></td>
+            <td>This page.</td>
+            <td>A single file with no dependencies. Open it in a browser.</td>
+          </tr>
+          <tr>
+            <td><code>web/index.html</code></td>
+            <td>A one-line page that forwards visitors to <code>architecture.html</code>.</td>
+            <td>Web hosts serve <code>index.html</code> by default, so this makes the site's main address work.</td>
+          </tr>
+          <tr>
+            <td><code>.git/</code></td>
+            <td>Git's own storage: the full history of every committed version of the project.</td>
+            <td>Managed by git. Never edited by hand. This is the real backup.</td>
+          </tr>
+          <tr>
+            <td><code>.gitignore</code></td>
+            <td>A list of files git must never record: Python cache files, <code>node_modules</code>, <code>.env</code> files and the Modal token.</td>
+            <td>Keeps secrets and junk out of GitHub.</td>
+          </tr>
+          <tr>
+            <td><code>.github/workflows/pages.yml</code></td>
+            <td>Instructions for GitHub: whenever <code>web/</code> changes on <code>main</code>, publish that folder as a website.</td>
+            <td>Runs on GitHub's machines, not the PC. Publishes only <code>web/</code>, so <code>DESIGN.md</code> and the code are not served as web pages.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>Outside the folder</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Where</th><th>What</th><th>Role</th></tr>
+          <tr>
+            <td>PC</td>
+            <td><code>%USERPROFILE%\.modal.toml</code></td>
+            <td>The Modal login token. The Modal tool reads it to prove who you are. Keep it private and out of the project folder.</td>
+          </tr>
+          <tr>
+            <td>PC</td>
+            <td>Modal tool 1.6.1 in Python 3.13</td>
+            <td>Reads <code>smoke_test.py</code>, uploads it, and shows the output. It does no model work itself.</td>
+          </tr>
+          <tr>
+            <td>Modal</td>
+            <td>Workspace <code>c-mckeon</code></td>
+            <td>Holds the cached model image and two deployed apps: <code>agentdash-model</code> and <code>agentdash-gateway</code>. Deployed means ready to start on demand; no machine runs while nobody is calling.</td>
+          </tr>
+          <tr>
+            <td>Modal</td>
+            <td>Secret <code>agentdash-gateway</code></td>
+            <td>The gateway's key, handed to the gateway's machine when it starts.</td>
+          </tr>
+          <tr>
+            <td>Modal</td>
+            <td>Volume <code>agentdash-ledger</code></td>
+            <td>A small disk holding one ledger file per month, one line per model call. It stands in for the database until step 3.</td>
+          </tr>
+          <tr>
+            <td>GitHub</td>
+            <td>Repository <code>c-mckeon/AgentDash</code></td>
+            <td>The online copy of the project and its history. GitHub Pages publishes the <code>web/</code> folder from it as this site.</td>
+          </tr>
+          <tr>
+            <td>Docker Hub</td>
+            <td><code>ollama/ollama</code> image</td>
+            <td>The base the model image is built from. Modal downloaded it once during the build.</td>
+          </tr>
+          <tr>
+            <td>Ollama library</td>
+            <td><code>qwen2.5-coder:1.5b</code></td>
+            <td>The model file. Downloaded once into the image during the build.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>How the pieces connect</h2>
+<p>Setting it up (once per change):</p>
+<pre>serve.py, main.py ──(Modal tool, using the token)──► Modal
+                                                      │
+                        Docker Hub: ollama/ollama ────┤  build once, then cached
+                        Ollama library: Qwen file ────┘</pre>
+<p>Using it (every model call):</p>
+<pre>caller with the key (today: try_it.py on the PC)
+        │  prompt
+        ▼
+   GATEWAY  ── wrong key? ─────────────► refused
+        │   ── budget spent? ──────────► refused, model never wakes
+        │  forwards
+        ▼
+   MODEL SERVICE: Ollama ⇄ Qwen   (wakes if asleep, sleeps after 60 s idle)
+        │  answer + timings
+        ▼
+   GATEWAY  ── writes one line to the ledger volume
+        │  answer + cost + remaining budget
+        ▼
+     caller</pre>
+    </div>
+  </details>
+
+  <!-- ============ LATER STEPS ============ -->
+  <details class="step">
+    <summary><span class="num">Step 2</span> Sandbox <span class="chip done">Done</span></summary>
+    <div class="body">
+
+      <h2>Architecture at this step</h2>
+      <p>A sandbox is a disposable computer: created for one run, used, then destroyed. This step adds the code that asks Modal for one and the definition of what is installed on it. Nothing drives a sandbox automatically yet; a test script on the PC does it by hand. The orchestrator takes over in step 3 and the agent moves in at step 4.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 400" role="img" aria-label="Architecture at step 2: the sandbox provider asks Modal to create a sandbox; the sandbox clones a public repository from GitHub and can call the gateway, which forwards to the model service. The agent, orchestrator, dashboard, router and supervisor come in later steps.">
+          <defs>
+            <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+            <marker id="ah2-later" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head-later" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <!-- Sandbox provider -->
+          <rect class="box-todo" x="20" y="56" width="210" height="150" rx="8"/>
+          <text class="t-title" x="36" y="80">Sandbox provider</text>
+          <text x="36" y="104">create · run a command</text>
+          <text x="36" y="124">destroy · report cost</text>
+          <text class="t-muted" x="36" y="152">Today: run by a test script</text>
+          <text class="t-muted" x="36" y="168">on the PC.</text>
+          <text class="t-muted" x="36" y="188">Step 3: run by the orchestrator.</text>
+
+          <!-- GitHub -->
+          <rect class="box-built" x="20" y="270" width="210" height="70" rx="8"/>
+          <text class="t-title" x="36" y="294">GitHub</text>
+          <text class="t-muted" x="36" y="316">a public repository to work on</text>
+
+          <!-- Modal zone -->
+          <rect class="zone" x="290" y="20" width="590" height="250" rx="12"/>
+          <text class="t-title" x="306" y="44">Modal cloud</text>
+
+          <!-- Sandbox -->
+          <rect class="box-todo" x="310" y="60" width="230" height="190" rx="8"/>
+          <text class="t-title" x="326" y="84">Sandbox (one per run)</text>
+          <text x="326" y="110">Node, git, ripgrep</text>
+          <text x="326" y="130">/workspace holds the repo</text>
+          <text class="t-muted" x="326" y="160">1 core, 1 GiB, no secrets.</text>
+          <text class="t-muted" x="326" y="176">Starts in about 2 seconds.</text>
+          <text class="t-muted" x="326" y="204">Destroys itself after 10</text>
+          <text class="t-muted" x="326" y="220">minutes if we forget to.</text>
+
+          <!-- Gateway -->
+          <rect class="box-built" x="580" y="60" width="130" height="190" rx="8"/>
+          <text class="t-title" x="594" y="84">Gateway</text>
+          <text class="t-muted" x="594" y="110">key check</text>
+          <text class="t-muted" x="594" y="128">budget stop</text>
+          <text class="t-muted" x="594" y="146">ledger</text>
+
+          <!-- Model service -->
+          <rect class="box-built" x="740" y="60" width="124" height="190" rx="8"/>
+          <text class="t-title" x="752" y="84">Model service</text>
+          <text class="t-muted" x="752" y="110">Ollama</text>
+          <text class="t-muted" x="752" y="128">Qwen 1.5B</text>
+          <text class="t-muted" x="752" y="146">4 threads</text>
+
+          <!-- provider -> sandbox -->
+          <path class="arrow" d="M230 130 L308 130" marker-end="url(#ah2)"/>
+          <text class="t-muted" x="236" y="120">commands</text>
+
+          <!-- sandbox -> github (clone) -->
+          <path class="arrow" d="M400 250 L400 305 L232 305" marker-end="url(#ah2)"/>
+          <text class="t-muted" x="262" y="296">clones from</text>
+
+          <!-- sandbox -> gateway -->
+          <path class="arrow" d="M540 155 L578 155" marker-end="url(#ah2)"/>
+          <!-- gateway -> model -->
+          <path class="arrow" d="M710 155 L738 155" marker-end="url(#ah2)"/>
+
+          <!-- Later -->
+          <text class="t-muted" x="430" y="302">Later steps</text>
+          <rect class="box-later" x="430" y="312" width="100" height="56" rx="8"/>
+          <text x="440" y="336">Orchestrator</text>
+          <text class="t-muted" x="440" y="354">step 3</text>
+          <rect class="box-later" x="540" y="312" width="100" height="56" rx="8"/>
+          <text x="550" y="336">Agent</text>
+          <text class="t-muted" x="550" y="354">step 4</text>
+          <rect class="box-later" x="650" y="312" width="100" height="56" rx="8"/>
+          <text x="660" y="336">Dashboard</text>
+          <text class="t-muted" x="660" y="354">step 5</text>
+          <rect class="box-later" x="760" y="312" width="120" height="56" rx="8"/>
+          <text x="770" y="336">Router, supervisor</text>
+          <text class="t-muted" x="770" y="354">steps 6, 7</text>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built in earlier steps</span>
+        <span class="l-todo">Added in this step</span>
+        <span class="l-later">Later steps</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Piece</th><th>What it is for</th></tr>
+          <tr><td>Sandbox image</td><td>The list of what every sandbox starts with: Node (the agent will be written in TypeScript and run there), git (to fetch the repository and produce the patch) and ripgrep (fast file search for the agent).</td></tr>
+          <tr><td>Sandbox provider</td><td>Four operations behind a plain interface: create a sandbox, run a command in it, destroy it, and report how long it lived and roughly what it cost. The rest of the system will only ever see that interface, so a different vendor could be swapped in.</td></tr>
+          <tr><td>Safety limits</td><td>Every sandbox has a maximum lifetime (10 minutes by default) enforced by Modal, so a forgotten one cannot keep billing. Every command has a time limit. Processor use is capped at what is reserved, so a sandbox-second has a predictable price.</td></tr>
+        </table>
+      </div>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li>A sandbox was created in 1.2 to 2.2 seconds once its image had been built.</li>
+        <li>Inside it: git, ripgrep and Node all present; a public repository cloned in half a second; a file edited; <code>git diff</code> returned the change as a patch.</li>
+        <li>From inside the sandbox, the gateway answered. That is the path the agent will use to reach the model.</li>
+        <li>A failing command reported its exit code and error text. A command that ran past its time limit was stopped and reported as timed out, and the sandbox was still usable afterwards.</li>
+        <li>After destroy, Modal reported the sandbox as stopped and listed no running containers. Each test lived 7 to 10 seconds and cost a few hundredths of a cent.</li>
+      </ul>
+      <p class="note">One surprise: when a command hits its time limit, Modal's library sometimes raises an error and sometimes reports the command as killed. The provider handles both and reports one consistent result.</p>
+
+      <h2>Questions this version raises</h2>
+      <dl class="qa">
+        <dt>Why does each run need its own computer?</dt>
+        <dd>The agent runs shell commands and edits files that an AI model chose. A sandbox means the worst it can do is damage a machine that is about to be deleted anyway, and one run cannot see or disturb another.</dd>
+
+        <dt>Why is this part TypeScript when the gateway is Python?</dt>
+        <dd>The plan is TypeScript everywhere. The gateway and model service are Python only because they run inside Modal, which is built around Python. The sandbox provider runs on our side (later inside the orchestrator), and Modal offers a TypeScript library for creating sandboxes, so the plan holds here.</dd>
+
+        <dt>Does the sandbox hold any secrets?</dt>
+        <dd>No. It clones a public repository, so it needs no git credentials. When the agent arrives it will carry only a short-lived pass for the gateway.</dd>
+
+        <dt>Is sandbox cost inside the budget hard stop?</dt>
+        <dd>Yes, since the research changes: the hard stop reads Modal's meter for the whole workspace, which includes sandboxes. The gateway's own ledger does not list sandbox time yet; the orchestrator will record it in step 3.</dd>
+
+        <dt>Still open</dt>
+        <dd>The live check is run from the PC. Once the orchestrator exists it should run in the cloud like everything else.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">New or changed since step 1 (12 October 2026). Files not listed are as described under step 1.</p>
+<pre>AgentDash/
+├── package.json, package-lock.json, tsconfig.json     new
+├── node_modules/                                      new (not in git)
+├── sandbox/
+│   └── image.ts                                       new
+├── sandbox-provider/
+│   ├── types.ts                                       new
+│   ├── pricing.ts                                     new
+│   ├── modal.ts                                       new
+│   └── try-it.ts                                      new
+├── research/
+│   ├── experiments.py                                 new
+│   └── results/2026-10-12.jsonl                       new
+├── gateway/core.py, gateway/main.py                   changed
+├── model-server/serve.py                              changed
+├── tests/
+│   ├── test_gateway_core.py                           changed
+│   └── sandbox-pricing.test.ts                        new
+└── web/
+    ├── site.css                                       new
+    └── research.html                                  new</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr>
+            <td><code>sandbox/image.ts</code></td>
+            <td>Says what is installed on a sandbox: the base system and the setup commands.</td>
+            <td>Read by <code>sandbox-provider/modal.ts</code>, which hands it to Modal. Modal builds it once and reuses it.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/types.ts</code></td>
+            <td>The interface: what any sandbox provider must be able to do, with no mention of Modal.</td>
+            <td>The orchestrator and agent will depend on this file only.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/modal.ts</code></td>
+            <td>The Modal version of that interface. Sets the size, the processor cap, the maximum lifetime and command time limits.</td>
+            <td>Talks to Modal using the login token on the PC. Creates sandboxes in the Modal app <code>agentdash-sandboxes</code>.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/pricing.ts</code></td>
+            <td>Modal's sandbox prices and the arithmetic for estimating what a sandbox cost.</td>
+            <td>Used by <code>modal.ts</code>; checked by <code>tests/sandbox-pricing.test.ts</code>.</td>
+          </tr>
+          <tr>
+            <td><code>sandbox-provider/try-it.ts</code></td>
+            <td>The live check described above. Run with <code>npm run sandbox:try</code>.</td>
+            <td>Reads the gateway's address from <code>.env</code> to test the sandbox-to-gateway path.</td>
+          </tr>
+          <tr>
+            <td><code>package.json</code>, <code>package-lock.json</code></td>
+            <td>The list of TypeScript-side dependencies (Modal's library, TypeScript itself) and their exact versions.</td>
+            <td><code>npm install</code> reads them to fill <code>node_modules/</code>, which is not stored in git.</td>
+          </tr>
+          <tr>
+            <td><code>tsconfig.json</code></td>
+            <td>Settings for the TypeScript checker.</td>
+            <td>Used by <code>npm run typecheck</code>. Node runs the <code>.ts</code> files directly, so there is no build step.</td>
+          </tr>
+          <tr>
+            <td><code>research/</code></td>
+            <td>The experiment script and its raw results, by date.</td>
+            <td>Calls the gateway like any other client. Written up on the Research tab.</td>
+          </tr>
+          <tr>
+            <td><code>web/site.css</code>, <code>web/research.html</code></td>
+            <td>Shared styling for the site, and the Research tab.</td>
+            <td>Published by GitHub Pages with the rest of <code>web/</code>.</td>
+          </tr>
+        </table>
+      </div>
+
+      <h2>How the pieces connect</h2>
+<pre>try-it.ts (later: the orchestrator)
+        │  uses the interface in types.ts
+        ▼
+sandbox-provider/modal.ts ──(Modal library, login token)──► Modal
+        │                                                    │ builds the image from
+        │                                                    │ sandbox/image.ts, once
+        │  create                                            ▼
+        ├───────────────────────────────────────────► SANDBOX
+        │  run: git clone ───────────────────────────►   │ ──► GitHub (public repo)
+        │  run: edit, git diff ◄── patch ────────────────│
+        │  run: curl gateway ────────────────────────►   │ ──► GATEWAY ──► MODEL SERVICE
+        │  destroy                                       ▼
+        └───────────────────────────────────────────► gone; lifetime and cost reported</pre>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 3</span> Skeleton: API, database, orchestrator <span class="chip done">Done</span></summary>
+    <div class="body">
+
+      <h2>Architecture at this step</h2>
+      <p>Until now the pieces existed separately and were poked by hand. This step adds the part that ties them together: a server that accepts "start a run", an orchestrator that carries the run through its stages, and a database that remembers everything that happened. There is still no agent, so a run clones the repository and hands back an empty patch.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 420" role="img" aria-label="Architecture at step 3: the owner calls the API to start a run; the API stores it in the database and hands it to the orchestrator; the orchestrator uses the sandbox provider to create a sandbox on Modal, which clones from GitHub and checks its pass with the gateway; every stage is written to the event log in the database.">
+          <defs>
+            <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <!-- our server zone -->
+          <rect class="zone" x="20" y="20" width="430" height="300" rx="12"/>
+          <text class="t-title" x="36" y="44">Our server</text>
+          <text class="t-muted" x="124" y="44">run from the PC for now; hosted at step 8</text>
+
+          <rect class="box-todo" x="40" y="60" width="180" height="100" rx="8"/>
+          <text class="t-title" x="54" y="84">API</text>
+          <text x="54" y="106">start run · kill run</text>
+          <text x="54" y="124">read runs and events</text>
+          <text class="t-muted" x="54" y="146">owner token to start or kill</text>
+
+          <rect class="box-todo" x="250" y="60" width="180" height="100" rx="8"/>
+          <text class="t-title" x="264" y="84">Orchestrator</text>
+          <text x="264" y="106">queued → triaging →</text>
+          <text x="264" y="124">running → reviewing → done</text>
+          <text class="t-muted" x="264" y="146">or failed / killed</text>
+
+          <rect class="box-todo" x="40" y="200" width="180" height="100" rx="8"/>
+          <text class="t-title" x="54" y="224">Database</text>
+          <text x="54" y="246">runs · events</text>
+          <text x="54" y="264">model choices · patch</text>
+          <text class="t-muted" x="54" y="286">one SQLite file</text>
+
+          <rect class="box-built" x="250" y="200" width="180" height="100" rx="8"/>
+          <text class="t-title" x="264" y="224">Sandbox provider</text>
+          <text class="t-muted" x="264" y="246">create · run · destroy</text>
+          <text class="t-muted" x="264" y="264">step 2</text>
+
+          <!-- Modal zone -->
+          <rect class="zone" x="500" y="20" width="380" height="300" rx="12"/>
+          <text class="t-title" x="516" y="44">Modal cloud</text>
+
+          <rect class="box-built" x="520" y="200" width="160" height="100" rx="8"/>
+          <text class="t-title" x="534" y="224">Sandbox</text>
+          <text class="t-muted" x="534" y="246">clone · git diff</text>
+          <text class="t-muted" x="534" y="264">holds a run pass only</text>
+
+          <rect class="box-built" x="520" y="60" width="160" height="100" rx="8"/>
+          <text class="t-title" x="534" y="84">Gateway</text>
+          <text class="t-muted" x="534" y="106">now also accepts</text>
+          <text class="t-muted" x="534" y="124">per-run passes</text>
+
+          <rect class="box-built" x="710" y="60" width="150" height="100" rx="8"/>
+          <text class="t-title" x="724" y="84">Model service</text>
+          <text class="t-muted" x="724" y="106">not used by a run yet</text>
+
+          <!-- arrows -->
+          <path class="arrow" d="M220 110 L248 110" marker-end="url(#ah3)"/>
+          <path class="arrow" d="M130 160 L130 198" marker-end="url(#ah3)"/>
+          <path class="arrow" d="M300 160 L222 215" marker-end="url(#ah3)"/>
+          <text class="t-muted" x="232" y="182">every stage</text>
+          <path class="arrow" d="M340 160 L340 198" marker-end="url(#ah3)"/>
+          <path class="arrow" d="M430 250 L518 250" marker-end="url(#ah3)"/>
+          <path class="arrow" d="M600 200 L600 162" marker-end="url(#ah3)"/>
+          <text class="t-muted" x="608" y="186">pass check</text>
+          <path class="arrow" d="M680 110 L708 110" marker-end="url(#ah3)"/>
+
+          <!-- outside -->
+          <rect class="box-built" x="40" y="350" width="180" height="50" rx="8"/>
+          <text class="t-title" x="54" y="380">Owner (you)</text>
+          <path class="arrow" d="M70 350 L70 162" marker-end="url(#ah3)"/>
+          <rect class="box-built" x="520" y="350" width="160" height="50" rx="8"/>
+          <text class="t-title" x="534" y="380">GitHub</text>
+          <path class="arrow" d="M600 300 L600 348" marker-end="url(#ah3)"/>
+
+          <rect class="box-later" x="250" y="350" width="90" height="50" rx="8"/>
+          <text x="260" y="372">Agent</text>
+          <text class="t-muted" x="260" y="390">step 4</text>
+          <rect class="box-later" x="350" y="350" width="100" height="50" rx="8"/>
+          <text x="360" y="372">Dashboard</text>
+          <text class="t-muted" x="360" y="390">step 5</text>
+          <rect class="box-later" x="710" y="350" width="150" height="50" rx="8"/>
+          <text x="720" y="372">Router, supervisor</text>
+          <text class="t-muted" x="720" y="390">steps 6, 7</text>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built in earlier steps</span>
+        <span class="l-todo">Added in this step</span>
+        <span class="l-later">Later steps</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Piece</th><th>What it is for</th></tr>
+          <tr><td>API</td><td>The front door. Anyone may read runs and their events; starting or killing a run needs the owner's token. It only accepts public GitHub addresses, so a sandbox never needs credentials.</td></tr>
+          <tr><td>Orchestrator</td><td>Carries one run through its stages in order and refuses illegal moves (a finished run can never restart; stages cannot be skipped). It checks for a kill request between stages and always destroys the sandbox, whatever happens.</td></tr>
+          <tr><td>Database</td><td>Remembers runs, the ordered event log, which model was chosen and why, the patch, and what the sandbox cost. The event log is what the dashboard's live feed and replay will be built from.</td></tr>
+          <tr><td>Per-run pass</td><td>A short-lived pass, valid for one run, that a sandbox uses to reach the gateway. The gateway checks it by arithmetic alone, with no lookup, and records the call against that run as "worker" whatever the caller claims.</td></tr>
+          <tr><td>Config</td><td>One place that reads settings and secrets from the environment and complains clearly if any are missing.</td></tr>
+        </table>
+      </div>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li><strong>A normal run</strong> went queued → triaging → running → reviewing → done in about 7 seconds, with 13 events logged, and cost $0.0003 of sandbox time.</li>
+        <li><strong>A run pointed at a repository that does not exist</strong> ended as "failed" with a clear reason, and its sandbox was still destroyed.</li>
+        <li><strong>A run killed straight after starting</strong> ended as "killed" and its sandbox was destroyed 0.7 seconds after it was created.</li>
+        <li><strong>From inside the sandbox</strong>, the run's pass was accepted by the gateway. Outside it, an expired pass, a pass altered to name another run, and a pass signed with the wrong key were all refused.</li>
+        <li>None of this woke the model, so it cost no model time.</li>
+      </ul>
+
+      <h2>Questions this version raises</h2>
+      <dl class="qa">
+        <dt>What is an orchestrator, as opposed to the agent?</dt>
+        <dd>The orchestrator is the stage manager: it sets up the sandbox, starts things in the right order, watches for a kill request, and cleans up. It makes no decisions about code. The agent is the performer: it decides what to read, edit and run. This step built the stage manager; the performer arrives next.</dd>
+
+        <dt>Why SQLite when the plan said hosted Postgres?</dt>
+        <dd>Postgres needs an account with a hosting provider, and nothing here needs it yet. SQLite is a single file, costs nothing and is built into Node. All database code is in one file behind a small set of functions, so switching at deploy time means rewriting that file only.</dd>
+
+        <dt>Why does the server run on the PC when nothing should?</dt>
+        <dd>It should not, in the end. Hosting it is step 8. For now it is started only for a few seconds to run the live check. One consequence shaped the design: a sandbox in the cloud cannot call back to a server on a PC, so the agent will report its progress by writing to its output, which the orchestrator reads, and not by calling our API.</dd>
+
+        <dt>Why a pass per run, when the gateway already has a key?</dt>
+        <dd>The key can do anything, for ever. A sandbox runs commands chosen by an AI model, so it should hold as little as possible: a pass that works for one run, for fifteen minutes, as one role.</dd>
+
+        <dt>Still open</dt>
+        <dd>Runs started at the same moment overlap; the one-at-a-time rule is not enforced yet. Sandbox cost is stored on the run but not in the gateway's ledger, though the budget hard stop does see it through Modal's meter.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">New or changed since step 2 (12 October 2026).</p>
+<pre>AgentDash/
+├── config.ts                          new
+├── api/
+│   ├── server.ts                      new
+│   └── main.ts                        new
+├── db/
+│   └── index.ts                       new
+├── orchestrator/
+│   ├── state.ts                       new
+│   ├── tokens.ts                      new
+│   ├── run.ts                         new
+│   └── try-it.ts                      new
+├── gateway/core.py, gateway/main.py   changed (accept per-run passes)
+├── tests/
+│   ├── skeleton.test.ts               new
+│   └── test_gateway_core.py           changed
+└── .env                               changed (owner token added; not in git)</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr><td><code>config.ts</code></td><td>Reads settings from the environment: gateway address and key, owner token, database file, time limits.</td><td>Read once at start-up by <code>api/main.ts</code>. Values come from <code>.env</code>.</td></tr>
+          <tr><td><code>api/server.ts</code></td><td>The web routes and their checks.</td><td>Writes new runs to <code>db/</code> and hands them to the orchestrator. Knows nothing about sandboxes or Modal.</td></tr>
+          <tr><td><code>api/main.ts</code></td><td>Start-up: wires the real database, the real sandbox provider and the orchestrator into the API.</td><td>Run with <code>node api/main.ts</code>.</td></tr>
+          <tr><td><code>db/index.ts</code></td><td>The tables and every read and write.</td><td>The only file that speaks SQL. Uses <code>orchestrator/state.ts</code> to refuse illegal status changes.</td></tr>
+          <tr><td><code>orchestrator/state.ts</code></td><td>The lifecycle rules: which stage may follow which.</td><td>Plain logic with no dependencies; used by the database and the API.</td></tr>
+          <tr><td><code>orchestrator/tokens.ts</code></td><td>Makes and checks per-run passes.</td><td>Must match the same logic in <code>gateway/core.py</code>; a shared test value in both test suites guards that.</td></tr>
+          <tr><td><code>orchestrator/run.ts</code></td><td>Runs one run from start to finish.</td><td>Uses <code>sandbox-provider/</code> for the sandbox, <code>db/</code> for the record, and <code>tokens.ts</code> for the pass. The agent will be started from here in step 4.</td></tr>
+          <tr><td><code>orchestrator/try-it.ts</code></td><td>The live check described above.</td><td>Starts the API briefly, uses real sandboxes and the real gateway.</td></tr>
+          <tr><td><code>tests/skeleton.test.ts</code></td><td>15 automatic checks: lifecycle, passes, config, database, API.</td><td>No cloud needed. <code>npm test</code>.</td></tr>
+        </table>
+      </div>
+
+      <h2>How a run flows</h2>
+<pre>owner ── POST /runs (task, repo address, owner token) ──► API
+                                                          │ store run as "queued"
+                                                          ▼
+                                                     ORCHESTRATOR
+   triaging   record the model choice (default for now)       │
+   running    create sandbox ─────────────────────────────────┼──► Modal
+              git clone ──────────────────────────────────────┼──► GitHub
+              issue pass, check it from inside the sandbox ───┼──► Gateway
+              (agent would work here: step 4)                 │
+              git diff ── patch saved                         │
+   reviewing  (supervisor would judge here: step 7)           │
+   done       destroy sandbox, save its lifetime and cost ────┘
+                                                          │
+              every line above is an event in the database ▼
+anyone ── GET /runs/:id/events ──────────────────────────► API</pre>
+    </div>
+  </details>
+
+  <details class="step" open>
+    <summary><span class="num">Step 4</span> Harness (the agent) <span class="chip done">Done</span></summary>
+    <div class="body">
+
+      <h2>Architecture at this step</h2>
+      <p>The harness is the program that turns a model into an agent: it runs the model in a loop and carries out what the model asks for. It lives in <code>agent/</code>, is copied into each run's sandbox, and runs there. It reaches the model only through the gateway, using the run's pass, and reports back by printing one line per event, which the orchestrator reads and stores as it arrives.</p>
+
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 900 380" role="img" aria-label="Architecture at step 4: the orchestrator copies the agent into the sandbox and starts it; inside the sandbox the agent loop asks the model for a tool call through the gateway, carries it out on the repository, and repeats; each step is printed as an event that the orchestrator stores in the database.">
+          <defs>
+            <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="head" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+
+          <rect class="zone" x="20" y="20" width="230" height="340" rx="12"/>
+          <text class="t-title" x="36" y="44">Our server</text>
+          <rect class="box-built" x="40" y="60" width="190" height="110" rx="8"/>
+          <text class="t-title" x="54" y="84">Orchestrator</text>
+          <text class="t-muted" x="54" y="106">copies the agent in,</text>
+          <text class="t-muted" x="54" y="124">starts it, watches for kill,</text>
+          <text class="t-muted" x="54" y="142">collects the patch</text>
+          <rect class="box-built" x="40" y="230" width="190" height="110" rx="8"/>
+          <text class="t-title" x="54" y="254">Database</text>
+          <text class="t-muted" x="54" y="276">event log now includes</text>
+          <text class="t-muted" x="54" y="294">every model reply, tool</text>
+          <text class="t-muted" x="54" y="312">call and tool result</text>
+
+          <rect class="zone" x="290" y="20" width="590" height="340" rx="12"/>
+          <text class="t-title" x="306" y="44">Modal cloud</text>
+
+          <rect class="box-built" x="310" y="60" width="330" height="280" rx="8"/>
+          <text class="t-title" x="326" y="84">Sandbox</text>
+
+          <rect class="box-todo" x="330" y="100" width="290" height="130" rx="8"/>
+          <text class="t-title" x="344" y="124">Agent (the harness)</text>
+          <text x="344" y="148">1. ask the model for a tool call</text>
+          <text x="344" y="168">2. carry it out</text>
+          <text x="344" y="188">3. show the model the result</text>
+          <text class="t-muted" x="344" y="212">repeat, up to 8 times, until "finish"</text>
+
+          <rect class="box-built" x="330" y="256" width="290" height="64" rx="8"/>
+          <text class="t-title" x="344" y="280">The repository</text>
+          <text class="t-muted" x="344" y="302">files are read, written, searched, run</text>
+
+          <rect class="box-built" x="690" y="100" width="170" height="60" rx="8"/>
+          <text class="t-title" x="704" y="124">Gateway</text>
+          <text class="t-muted" x="704" y="144">checks the run's pass</text>
+          <rect class="box-built" x="690" y="200" width="170" height="60" rx="8"/>
+          <text class="t-title" x="704" y="224">Model service</text>
+          <text class="t-muted" x="704" y="244">Qwen 1.5B</text>
+
+          <path class="arrow" d="M230 100 L328 120" marker-end="url(#ah4)"/>
+          <text class="t-muted" x="246" y="96">start</text>
+          <path class="arrow" d="M330 190 L232 260" marker-end="url(#ah4)"/>
+          <text class="t-muted" x="240" y="212">events</text>
+          <path class="arrow" d="M620 130 L688 130" marker-end="url(#ah4)"/>
+          <path class="arrow" d="M775 160 L775 198" marker-end="url(#ah4)"/>
+          <path class="arrow" d="M475 230 L475 254" marker-end="url(#ah4)"/>
+        </svg>
+      </div>
+      <p class="legend">
+        <span class="l-built">Built in earlier steps</span>
+        <span class="l-todo">Added in this step</span>
+      </p>
+
+      <h2>What this step adds</h2>
+      <div class="scroll">
+        <table>
+          <tr><th>Piece</th><th>What it is for</th></tr>
+          <tr><td>The loop</td><td>Asks the model for one tool call, carries it out, shows the model the result, and repeats. It stops when the model calls "finish", after 8 steps, when the same call is made three times running (stuck), after three unreadable replies, or when the gateway says the budget is spent.</td></tr>
+          <tr><td>Seven tools</td><td>Read a file, write a file, add to the end of a file, replace a piece of text in a file, search files, run a shell command, and finish. The two partial-edit tools were added after the first runs showed the model overwriting a file it was asked to add to. File tools cannot reach outside the repository. Results are cut to 1,500 characters so they fit the model's small window.</td></tr>
+          <tr><td>The protocol</td><td>The instructions that tell the model which tools exist and how to reply, plus a tolerant reader for the replies. Built the way the research recommended: our own instructions, with the reply's shape forced.</td></tr>
+          <tr><td>Context keeper</td><td>Counts how much text is being sent and drops the oldest steps before the model's 4,096-token limit is reached, always keeping the instructions and the task. The research showed the model would otherwise lose them silently.</td></tr>
+          <tr><td>Live events</td><td>The orchestrator now reads the agent's output line by line as it happens, so the dashboard will be able to show a run in progress.</td></tr>
+          <tr><td>Kill during work</td><td>A kill request no longer waits for the current stage: the orchestrator notices within a second, saves the patch so far and destroys the sandbox.</td></tr>
+        </table>
+      </div>
+
+      <h2>What was checked on the live system</h2>
+      <ul>
+        <li>Three real tasks ran from "start a run" to a stored patch, in 15 to 26 seconds each.</li>
+        <li>All 9 model replies were valid tool calls. No repairs were needed.</li>
+        <li>One task was completed correctly. One got stuck repeating itself and was stopped by the loop. One was marked done although the result was wrong.</li>
+        <li>A run killed 6 seconds in ended as "killed" within a second, with its sandbox destroyed.</li>
+        <li>Each model call was recorded in the gateway's ledger against its run, as the worker role, using the run's pass.</li>
+      </ul>
+      <p class="note">The results are written up as finding 6 on the <a href="#research">Research</a> tab.</p>
+
+      <h2>Questions this version raises</h2>
+      <dl class="qa">
+        <dt>Where is the "intelligence": in the harness or the model?</dt>
+        <dd>In the model. The harness has no opinions about code. It is plumbing with safety rails: it passes messages, runs tools, keeps count, and decides when to stop. Swap in a stronger model and the same harness produces better work.</dd>
+
+        <dt>A run said "done" but the result was wrong. Is that a bug?</dt>
+        <dd>Not in the harness: it reported faithfully that the agent called "finish". The gap is that nobody checks the agent's claim. That is the supervisor's review, step 7. Until then, "done" means "the agent says it is done".</dd>
+
+        <dt>Why did a simple "add a line to a file" fail?</dt>
+        <dd>The only way to change a file is to write the whole file, and the model wrote just the new line without reading the old content first. A tool for appending or replacing part of a file would avoid that. It has not been added yet; the measurement came first.</dd>
+
+        <dt>Why copy the agent into the sandbox on every run?</dt>
+        <dd>It is five small files and takes a moment. The alternative, baking it into the sandbox image, would mean rebuilding the image every time the agent's code changes.</dd>
+
+        <dt>Still open</dt>
+        <dd>Whether to add an edit tool now or wait for a larger model. How often this model succeeds on a wider set of tasks; three is too few to say.</dd>
+      </dl>
+
+      <h2>Project folder at this step</h2>
+      <p class="note">New or changed since step 3 (12 October 2026).</p>
+<pre>AgentDash/
+├── agent/
+│   ├── protocol.ts                    new
+│   ├── context.ts                     new
+│   ├── tools.ts                       new
+│   ├── loop.ts                        new
+│   └── main.ts                        new
+├── orchestrator/run.ts, try-it.ts     changed (installs and runs the agent)
+├── sandbox-provider/types.ts, modal.ts  changed (write a file, live output, per-command settings)
+├── config.ts                          changed (step and time limits for the agent)
+└── tests/agent.test.ts                new</pre>
+
+      <div class="scroll">
+        <table>
+          <tr><th>Path</th><th>What it does</th><th>How it relates to the rest</th></tr>
+          <tr><td><code>agent/protocol.ts</code></td><td>The list of tools, the instructions for the model, and the reader that turns a reply into a tool call.</td><td>Used by the loop. Shaped by research findings 2 and 4.</td></tr>
+          <tr><td><code>agent/context.ts</code></td><td>Estimates token counts and trims old steps to fit the window.</td><td>Used by the loop before every model call. Shaped by research finding 3.</td></tr>
+          <tr><td><code>agent/tools.ts</code></td><td>What each tool really does on the sandbox's files.</td><td>Uses plain file operations, ripgrep for search and <code>sh</code> for commands, all installed by <code>sandbox/image.ts</code>.</td></tr>
+          <tr><td><code>agent/loop.ts</code></td><td>The loop and its stopping rules.</td><td>Knows nothing about the network or files; those are handed to it, which is what lets it be tested without a model.</td></tr>
+          <tr><td><code>agent/main.ts</code></td><td>The starting point inside the sandbox: reads the task and the pass, connects the loop to the gateway and the tools, prints events.</td><td>Started by <code>orchestrator/run.ts</code>. Calls the gateway's <code>/v1/chat</code>.</td></tr>
+          <tr><td><code>tests/agent.test.ts</code></td><td>20 automatic checks, including every odd reply shape the model produced in research.</td><td>No cloud needed. The loop is exercised with scripted replies.</td></tr>
+        </table>
+      </div>
+
+      <h2>How one step of the agent flows</h2>
+<pre>AGENT (in the sandbox)
+   │ trims the conversation to fit 4,096 tokens
+   │ sends it with the run's pass ───────────────► GATEWAY ──► MODEL
+   │                                                  │ budget check, ledger line
+   │ ◄── {"tool": "write_file", "args": {...}} ◄──────┘
+   │ reads the reply; if unreadable, tells the model and tries again
+   │ carries out the tool on the repository
+   │ prints an event line ──► ORCHESTRATOR ──► DATABASE (event log)
+   └ adds the result to the conversation and goes round again</pre>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 5</span> Dashboard <span class="chip current">Preview built</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>The control panel in <code>web/</code>: live feed of what the agent is doing, replay of past runs, diff view, cost and compute view, start and kill, owner login.</p>
+      <h2>What exists so far</h2>
+      <p>A read-only preview on the <a href="#dashboard">Dashboard</a> tab. It draws three real runs saved in <code>web/data/runs.json</code>: summary figures, the list of runs, each run's event feed with a replay button, the resulting patch, and a cost breakdown. Because this site is public, it is connected to nothing: the start and kill buttons are disabled, and the page makes no request except to load that file.</p>
+      <p>The whole site is now one page with three tabs, so switching between Dashboard, Architecture and Research loads nothing new. <code>web/dashboard.js</code> holds the tab switching and the preview; <code>web/site.css</code> holds the styling.</p>
+      <h2>Still to do</h2>
+      <p>Connecting it to the API for live runs, owner login for the start and kill buttons, and hosting the API (step 8).</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is finished.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 6</span> Router <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>A second, larger model on the same machine, and <code>router/</code>: a small model rates each task and picks which model size does the work. Each decision is recorded with its reason and shown on the dashboard.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 7</span> Supervisor <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p><code>supervisor/</code>: cheap rule checks on every event, a model verdict when a rule fires, a review of the final diff, and the power to kill a run. An "escalate" verdict is recorded as a flag until a larger model tier exists.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+
+  <details class="step">
+    <summary><span class="num">Step 8</span> Deploy <span class="chip">Planned</span></summary>
+    <div class="body">
+      <h2>What this step will add</h2>
+      <p>Free-tier hosting for the API, database and dashboard, plus a few good recorded runs for visitors to replay.</p>
+      <p class="note">Diagram, questions and folder snapshot will be filled in when this step is reached.</p>
+    </div>
+  </details>
+  </section>
+
+  <section id="tab-research" hidden>
+
+
+  <h1>Research notes</h1>
+  <p class="lede">Small experiments run against the system as it stood on each date, to learn what our choices are good at and where they limit us. One section per date, newest first, with a section per topic inside each date.</p>
+
+  <details class="step" open>
+    <summary><span class="num">12 October 2026</span> First measurements: cost tracking, tool calls, context size, first agent runs <span class="chip done">6 findings</span></summary>
+    <div class="body">
+
+      <h2>In short</h2>
+      <ul>
+        <li><strong>Our cost ledger was recording about an eighth of the real bill.</strong> Two causes were found and fixed. After the fixes it matched Modal's bill for the model machine to within 2% on the next batch of calls.</li>
+        <li><strong>Limiting the model to 4 processor threads gave the same writing speed at about half the cost.</strong> Left alone, it was using about 19 processor cores, and Modal charges for that.</li>
+        <li><strong>Asking for JSON output fixes the model's tool-call formatting completely.</strong> What remains is judgement: it chose the wrong tool in 2 of 10 simple requests, however the question was asked.</li>
+        <li><strong>The model can only read about 4,000 tokens, and it fails silently beyond that.</strong> A longer prompt has its beginning cut off with no error, and the beginning is where the task and instructions sit.</li>
+        <li><strong>In real agent runs, "done" did not always mean correct.</strong> Every reply was a valid tool call, but in one of three tasks the agent saw its own script fail and still reported success. Nothing checks its claim yet.</li>
+        <li><strong>Waiting costs more than working.</strong> One short question costs about 0.7 cents, of which roughly 97% is the machine starting, idling and stopping.</li>
+      </ul>
+
+      <h2>How this was done</h2>
+      <p>Every model call went through the deployed gateway to <code>qwen2.5-coder:1.5b</code> on Modal, with the randomness setting at zero so results repeat. Costs were read from Modal's own billing report before and after each experiment. Sample sizes are small (3 to 10 cases each), so treat the percentages as a first indication. The whole session cost about 6 cents of Modal credit. The script is <code>research/experiments.py</code> and the raw results are in <code>research/results/2026-10-12.jsonl</code>.</p>
+
+      <details class="topic">
+        <summary>Cost tracking: our ledger against Modal's bill</summary>
+        <div class="topic-body">
+      <p>The gateway keeps a ledger: one line per model call with an estimated cost. Before this session it said <strong>$0.0026</strong> had been spent. Modal's bill said <strong>$0.0201</strong>. The budget hard stop was reading the ledger, so it would have let spending run to about eight times the limit.</p>
+      <p>To find the gap, the model machine was woken three times under controlled conditions, with the bill read before and after each:</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Wake</th><th class="num">Time in calls</th><th class="num">Time billed</th><th class="num">Cores billed (avg)</th><th class="num">Modal's charge</th></tr>
+          <tr><td>One tiny call</td><td class="num">8 s</td><td class="num">114 s</td><td class="num">4.0</td><td class="num">$0.0070</td></tr>
+          <tr><td>Two long replies, model left alone</td><td class="num">35 s</td><td class="num">112 s</td><td class="num">7.7</td><td class="num">$0.0123</td></tr>
+          <tr><td>Two long replies, limited to 4 threads</td><td class="num">31 s</td><td class="num">112 s</td><td class="num">4.0</td><td class="num">$0.0069</td></tr>
+        </table>
+      </div>
+      <p class="note">"Time billed" is worked out from Modal's memory charge, which is a flat rate per second the machine exists. "Cores billed" is the processor charge divided by that time.</p>
+
+      <h3>Cause one: the machine bills for much more than the calls</h3>
+      <p>Each wake was billed for 77 to 106 seconds beyond the calls themselves. We had set the machine to stay up 60 seconds after its last call, and starting and stopping added another 16 to 46 seconds. The ledger had only been counting the calls.</p>
+
+      <h3>Cause two: the model was using far more processor than we reserved</h3>
+      <p>We reserved 4 cores and priced calls at 4 cores. But Ollama uses every core it can see, and Modal charges for processor actually used above the reservation. While writing, the model was using about 19 cores. Limiting it to 4 threads changed nothing about writing speed (26 tokens per second limited, 23.5 unlimited, same 292-token reply) and cut that wake's cost by 44%.</p>
+
+      <h3>What was changed</h3>
+      <ul>
+        <li>The model is now limited to 4 threads, so a second of model time costs what the registry says it costs.</li>
+        <li>The ledger now charges each call for the idle and start/stop time around it.</li>
+        <li><strong>The hard stop now reads Modal's own meter</strong> and uses whichever is larger, that or the ledger. Modal's figure is the truth but arrives one to two minutes late; the ledger is instant but an estimate.</li>
+      </ul>
+      <p>On the next batch of 48 calls the ledger recorded $0.0183 against Modal's $0.0186 for the model machine.</p>
+      <p class="note">Still not in the ledger: the gateway's own small machine (about 6% of the bill so far) and sandboxes. Modal's meter covers both, so the hard stop does too. Because that meter lags, spending can overshoot the limit by whatever is spent in one to two minutes: under a cent at current rates.</p>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Tool calls: getting one out of the model</summary>
+        <div class="topic-body">
+      <p>An agent works by asking for tools: "read this file", "run this command". The smoke test showed this model formats such requests badly. Ten simple requests were tried four ways, each with four tools available (read a file, write a file, search files, run a shell command).</p>
+      <div class="scroll">
+        <table>
+          <tr><th>How the model was asked</th><th class="num">Reply usable as it came</th><th class="num">Right tool and details</th><th class="num">Avg seconds</th></tr>
+          <tr><td>Ollama's built-in tool feature</td><td class="num"><span class="bad">0 / 10</span></td><td class="num">5 / 10</td><td class="num">1.55</td></tr>
+          <tr><td>Our own instructions: "reply with one JSON object"</td><td class="num"><span class="bad">0 / 10</span></td><td class="num">8 / 10</td><td class="num">1.39</td></tr>
+          <tr><td>Our instructions, plus Ollama forced to output JSON</td><td class="num"><span class="good">10 / 10</span></td><td class="num">8 / 10</td><td class="num">0.85</td></tr>
+          <tr><td>Our instructions, plus output forced to match an exact shape</td><td class="num"><span class="good">10 / 10</span></td><td class="num">8 / 10</td><td class="num">1.01</td></tr>
+        </table>
+      </div>
+      <ul>
+        <li><strong>The built-in tool feature does not work with this model.</strong> It never used the proper channel. It wrote the call as text, more than half the time inside a code block, and twice invented tools that do not exist (one named <code>export</code>, one named <code>package.json</code>). It also needed more than twice as many prompt tokens, because the tool definitions are long.</li>
+        <li><strong>Our own instructions got the right answer more often</strong>, but every reply was wrapped in a code block or surrounded by explanation.</li>
+        <li><strong>Forcing JSON output removed the formatting problem entirely</strong>, and was the fastest. Forcing an exact shape did no better here.</li>
+        <li><strong>The two failures were the same two requests in every approach</strong>: "what does src/config.ts export?" (it searched for the word "export" instead of reading the file) and "list the files in the current directory" (it searched instead of running a command). That is weak judgement, which no formatting trick fixes.</li>
+      </ul>
+      <p>For the harness (step 4): describe tools in our own prompt, force JSON output through the gateway, and keep a tolerant parser as a backstop. The gateway gained a <code>response_format</code> option for this.</p>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Context window: how much the model can read</summary>
+        <div class="topic-body">
+      <p>A fact was placed at the very start of a prompt ("the project codename is BLUEHERON"), followed by increasing amounts of filler code, followed by a question about the fact.</p>
+      <div class="scroll">
+        <table>
+          <tr><th class="num">Prompt size (characters)</th><th class="num">Tokens the model reported reading</th><th class="num">Seconds</th><th>Recalled the fact?</th></tr>
+          <tr><td class="num">1,602</td><td class="num">526</td><td class="num">4.6</td><td><span class="good">Yes</span></td></tr>
+          <tr><td class="num">7,682</td><td class="num">2,526</td><td class="num">20.2</td><td><span class="good">Yes</span></td></tr>
+          <tr><td class="num">15,582</td><td class="num">2,050</td><td class="num">19.3</td><td><span class="bad">No</span> (answered "project127")</td></tr>
+          <tr><td class="num">23,482</td><td class="num">2,050</td><td class="num">19.5</td><td><span class="bad">No</span></td></tr>
+          <tr><td class="num">39,282</td><td class="num">2,050</td><td class="num">19.6</td><td><span class="bad">No</span></td></tr>
+        </table>
+      </div>
+      <ul>
+        <li><strong>The window is 4,096 tokens</strong>, roughly 12,000 characters of code. That is small for an agent: a few files and the conversation so far will fill it.</li>
+        <li><strong>Overflow is silent.</strong> There is no error. The prompt is cut down to about 2,050 tokens by dropping the beginning, and the model answers confidently from what is left. In an agent, the beginning holds the task and the tool instructions.</li>
+        <li><strong>Reading is slow with 4 threads</strong>: about 125 tokens per second, so a full window takes around half a minute per step.</li>
+      </ul>
+      <p>For the harness: it must count tokens itself and keep every request under the limit, because nothing downstream will warn it. The window can be made larger in Ollama's settings at a cost in memory and time; that was not tested.</p>
+      <p class="note">The smoke test reported reading speeds of 330 to 430 tokens per second. Those were tiny prompts on about 19 cores, so the two figures are not a like-for-like comparison.</p>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Tool results: using what a tool returns</summary>
+        <div class="topic-body">
+      <p>Three cases, each a conversation where the model had already called a tool and now sees the result. This is a very small sample.</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Situation</th><th>What the model did</th><th>Verdict</th></tr>
+          <tr><td>The file it read contains the answer (port 8080)</td><td>Gave the answer "port 8080", but put it in a slightly different place in the JSON than instructed</td><td>Right answer, shape drifted</td></tr>
+          <tr><td>The tool returned "file not found"</td><td>Ran <code>ls config.py</code> to check</td><td>Sensible; did not make up an answer</td></tr>
+          <tr><td>Asked "does the test suite pass?" after listing files</td><td>Searched files for the word "test" instead of running the tests</td><td>Indirect; did not get closer to the answer</td></tr>
+        </table>
+      </div>
+      <p>It can follow a conversation and react to a result, but the judgement weakness from finding 2 shows up again. The shape drift in the first case means forced JSON alone is not enough for nested replies; forcing the exact shape, or a tolerant parser, is still needed.</p>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Speed and waiting</summary>
+        <div class="topic-body">
+      <div class="scroll">
+        <table>
+          <tr><th>Measurement</th><th>Result</th></tr>
+          <tr><td>Writing speed (4 threads)</td><td>About 26 tokens per second</td></tr>
+          <tr><td>First call after the machine has been asleep</td><td>8 to 10 seconds for a short reply, about 5 of them waking up</td></tr>
+          <tr><td>Short call while the machine is awake</td><td>0.06 to 0.2 seconds</td></tr>
+          <tr><td>Creating a sandbox (step 2)</td><td>1.2 to 2.2 seconds once its image is cached</td></tr>
+          <tr><td>A command inside a sandbox</td><td>About 0.3 seconds; cloning a tiny repository took 0.5</td></tr>
+          <tr><td>Modal's bill catching up with reality</td><td>One to two minutes</td></tr>
+        </table>
+      </div>
+      <p>The lowest price of waking the model machine once is about 0.7 cents, however little it does: the single tiny call in finding 1 needed 3 seconds of model work and was billed for 114 seconds of machine. Work that keeps the machine busy is cheap by comparison: 48 calls in one sitting cost about 1.9 cents.</p>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Agent runs: first real tasks</summary>
+        <div class="topic-body">
+      <p>Once the agent existed (step 4), three small tasks were run through the whole system on a tiny public repository, with the agent built the way findings 2 and 3 recommended. Three tasks is a very small sample.</p>
+      <div class="scroll">
+        <table>
+          <tr><th>Task</th><th>What the agent did</th><th>System's verdict</th><th>Actually correct?</th></tr>
+          <tr>
+            <td>Create a file with a given sentence</td>
+            <td>Wrote the file, then finished. 2 model calls.</td>
+            <td>Done</td>
+            <td><span class="good">Yes</span></td>
+          </tr>
+          <tr>
+            <td>Add a line to the end of an existing file</td>
+            <td>Overwrote the file with only the new line, without reading it first, then repeated the same write twice more.</td>
+            <td>Failed: stopped as "stuck" after the third identical call</td>
+            <td><span class="bad">No</span>, the original content was lost</td>
+          </tr>
+          <tr>
+            <td>Write a script that prints 1 to 3, then run it to check</td>
+            <td>Wrote a script that only works in a different shell, ran it, saw the wrong output (<code>{1..3}</code>), searched the file, then declared success.</td>
+            <td>Done</td>
+            <td><span class="bad">No</span>, and the agent's summary said it worked</td>
+          </tr>
+        </table>
+      </div>
+      <ul>
+        <li><strong>The format problem is solved.</strong> All 9 model replies were valid tool calls, with no repairs needed. Forcing the reply's shape, as finding 2 suggested, held up in real use.</li>
+        <li><strong>The stuck detector worked.</strong> It caught the repeated write and ended the run after 15 seconds instead of letting it use all its steps.</li>
+        <li><strong>"Done" does not mean "correct".</strong> In the third task the agent saw evidence it had failed and reported success anyway. Nothing in the system checks the result yet. This is the job planned for the supervisor's review in step 7, and this run is a concrete example of why it is needed.</li>
+        <li><strong>The model edits by replacing whole files and did not read first</strong>, despite being told to. A tool that appends or replaces part of a file, so the model never has to reproduce the rest, would remove this particular failure. <strong>Follow-up:</strong> those two tools were then added and the three tasks rerun. The "add a line" task was done correctly in 2 model calls, using the new append tool. The script task ended the same way as before: wrong output, reported as success.</li>
+        <li><strong>Cost:</strong> the three runs took 15 to 26 seconds each. Together they cost about 0.8 cents of model time by our ledger and 0.3 cents of sandbox time. The first run carried most of the model cost because it woke the machine.</li>
+      </ul>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Assessment: what this says about our choices</summary>
+        <div class="topic-body">
+      <div class="scroll">
+        <table>
+          <tr><th>Choice</th><th>What is working</th><th>Where it limits us</th></tr>
+          <tr>
+            <td>Modal for everything</td>
+            <td>Machines really do start in seconds and cost nothing when off. Its bill can be read by our own code within a couple of minutes, which is what made this research possible.</td>
+            <td>Billing has rules we did not know: processor use above the reservation is charged, and so is idle and start/stop time. Our own estimates will always be estimates.</td>
+          </tr>
+          <tr>
+            <td>A gateway in front of the model</td>
+            <td>Both cost fixes were made in one place and apply to every future caller. The hard stop now rests on the vendor's meter.</td>
+            <td>The meter's delay means the stop can overshoot by a minute or two of spending.</td>
+          </tr>
+          <tr>
+            <td>A small model on CPU</td>
+            <td>Fast enough, and cheap per second. Four cores are sufficient.</td>
+            <td>Wrong tool in 2 of 10 trivial requests. If that rate held across the steps of a task, a five-step task would succeed about a third of the time; that is arithmetic from a small sample, and real tasks may be better or worse. The 4,096-token window is tight.</td>
+          </tr>
+          <tr>
+            <td>Writing our own harness</td>
+            <td>The approach that worked best (our own tool instructions plus forced JSON) is only available because we control the loop. Ollama's built-in route scored worst.</td>
+            <td>We own every edge case: token counting, truncation, reply repair.</td>
+          </tr>
+          <tr>
+            <td>Scaling to zero after 60 idle seconds</td>
+            <td>Nothing is billed while nobody uses the system.</td>
+            <td>Occasional single calls are the most expensive way to use it. Triage and supervisor calls should land while the machine is already awake for a run.</td>
+          </tr>
+        </table>
+      </div>
+
+        </div>
+      </details>
+      <details class="topic">
+        <summary>Open questions</summary>
+        <div class="topic-body">
+      <ul>
+        <li>Does a larger context window (set in Ollama) work acceptably on 4 cores and 4 GiB?</li>
+        <li>How much does a slightly larger model improve tool choice, and at what cost per run? This is the routing question for step 6.</li>
+        <li>Is 60 seconds the right idle window? Shorter saves money on single calls but risks a wake-up in the middle of a run.</li>
+        <li>Does Ollama's reuse of an already-read prompt make later steps of a run much faster than the 125 tokens per second measured here?</li>
+        <li>How closely does a sandbox's estimated cost match its bill? Three short test sandboxes were billed about $0.0011 in total, in line with the estimate, but that is too little data to say.</li>
+      </ul>
+        </div>
+      </details>
+    </div>
+  </details>
+  </section>
+</main>
+<script src="dashboard.js"></script>
 </body>
 </html>

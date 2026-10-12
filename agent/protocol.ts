@@ -15,8 +15,19 @@ export interface ToolSpec {
 export const TOOLS: Record<string, ToolSpec> = {
   read_file: { description: "Read a file and return its contents.", args: { path: "Path relative to the repo root" } },
   write_file: {
-    description: "Create or overwrite a file with the full text given.",
+    description: "Create a new file, or replace a whole file, with the full text given.",
     args: { path: "Path relative to the repo root", content: "Full text of the file" },
+  },
+  // Added after the first agent runs: asked to add a line, the model rewrote
+  // the whole file with only that line. These let it change part of a file
+  // without having to reproduce the rest.
+  append_file: {
+    description: "Add text to the end of an existing file. The rest of the file is kept.",
+    args: { path: "Path relative to the repo root", content: "Text to add at the end" },
+  },
+  replace_in_file: {
+    description: "Replace one exact piece of text in a file. The rest of the file is kept.",
+    args: { path: "Path relative to the repo root", find: "Exact text to replace", replace: "New text" },
   },
   search_files: { description: "Search all files for a text pattern.", args: { pattern: "Text to search for" } },
   run_shell: { description: "Run a shell command in the repo root.", args: { command: "The command line to run" } },
